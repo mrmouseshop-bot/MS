@@ -2,78 +2,886 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Тест подключения к МоемуСкладу</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Обработка отчёта — МойСклад</title>
 <style>
-  body { font-family: -apple-system, system-ui, sans-serif; max-width: 480px; margin: 0 auto; padding: 20px; background: #f5f5f7; }
-  h1 { font-size: 18px; }
-  input { width: 100%; padding: 12px; font-size: 16px; box-sizing: border-box; margin-bottom: 12px; border: 1px solid #ccc; border-radius: 8px; }
-  button { width: 100%; padding: 14px; font-size: 16px; background: #007aff; color: white; border: none; border-radius: 8px; }
-  button:active { background: #005ecb; }
-  #result { margin-top: 16px; padding: 14px; border-radius: 8px; white-space: pre-wrap; font-size: 14px; line-height: 1.4; }
-  .ok { background: #d4f7dc; color: #14532d; }
-  .fail { background: #fde2e2; color: #7f1d1d; }
-  .pending { background: #eee; color: #333; }
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    max-width: 640px; margin: 0 auto; padding: 16px 16px 40px;
+    background: #f5f5f7; color: #1c1c1e;
+  }
+  h1 { font-size: 19px; margin: 8px 0 4px; }
+  h2 { font-size: 15px; margin: 0 0 8px; color: #444; }
+  p.hint { font-size: 13px; color: #666; margin: 0 0 12px; line-height: 1.4; }
+  details {
+    background: #fff; border-radius: 12px; padding: 12px 14px; margin-bottom: 14px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  }
+  summary { font-weight: 600; font-size: 15px; cursor: pointer; }
+  label { display: block; font-size: 13px; color: #555; margin: 10px 0 4px; }
+  input[type=text], input[type=password], textarea {
+    width: 100%; padding: 11px 12px; font-size: 16px; border: 1px solid #d0d0d5;
+    border-radius: 9px; background: #fafafa; font-family: inherit;
+  }
+  textarea { min-height: 220px; resize: vertical; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; line-height: 1.4; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row > * { flex: 1; }
+  button {
+    padding: 13px 16px; font-size: 16px; font-weight: 600; border: none; border-radius: 10px;
+    background: #007aff; color: #fff; cursor: pointer; margin-top: 8px;
+  }
+  button.secondary { background: #e5e5ea; color: #1c1c1e; font-weight: 500; }
+  button:active { opacity: 0.8; }
+  button:disabled { opacity: 0.5; }
+  #processBtn { width: 100%; padding: 16px; font-size: 17px; margin-top: 4px; }
+  .card { background: #fff; border-radius: 12px; padding: 14px; margin-bottom: 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+  #status { font-size: 13px; margin: 6px 0 0; color: #666; min-height: 16px; }
+  #log {
+    background: #111318; color: #d8dbe0; border-radius: 10px; padding: 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow-y: auto; margin-top: 10px;
+  }
+  #log .l-ok { color: #4ade80; }
+  #log .l-warn { color: #fbbf24; }
+  #log .l-error { color: #f87171; font-weight: 600; }
+  #log .l-discount { color: #38bdf8; }
+  #log .l-gift { color: #f0abfc; }
+  #log .l-skip { color: #9ca3af; }
+  #log .l-success { color: #4ade80; font-weight: 600; }
+  #log .l-info { color: #d8dbe0; }
+  #log .l-header { color: #fff; font-weight: 700; margin-top: 4px; }
+  .toolbar { display: flex; gap: 8px; margin-top: 10px; }
+  .toolbar button { margin-top: 0; flex: 1; padding: 10px; font-size: 13px; }
+  .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 20px; background: #eee; color: #555; margin-left: 6px; }
 </style>
 </head>
 <body>
-  <h1>Тест: может ли браузер напрямую достучаться до API МоегоСклада?</h1>
-  <p>Вставь токен и нажми кнопку. Это только проверка подключения — ничего не создаётся и не меняется.</p>
-  <input type="text" id="token" placeholder="Токен МоегоСклада">
-  <button onclick="testConnection()">Проверить подключение</button>
-  <div id="result" class="pending">Результат появится здесь.</div>
+
+  <h1>Обработка отчёта продаж</h1>
+  <p class="hint">Вставь текст отчёта, нажми «Провести». Приложение создаст отгрузки, списания подарков и входящие платежи в МоемСкладе — как раньше делал скрипт на компьютере.</p>
+
+  <details id="settingsBlock">
+    <summary>⚙️ Настройки подключения</summary>
+
+    <label for="workerUrl">Адрес прокси (Cloudflare Worker)</label>
+    <input type="text" id="workerUrl" placeholder="https://ms-proxy.твой-ник.workers.dev" autocapitalize="off" autocorrect="off">
+
+    <label for="token">Токен МоегоСклада</label>
+    <input type="password" id="token" placeholder="Bearer-токен" autocapitalize="off" autocorrect="off">
+
+    <label for="orgId">ID организации (organization)</label>
+    <input type="text" id="orgId" placeholder="например C01510b3-ecc2-...">
+
+    <label for="storeId">ID склада (store)</label>
+    <input type="text" id="storeId" placeholder="например c0170072-ecc2-...">
+
+    <div class="toolbar">
+      <button id="saveSettingsBtn">Сохранить</button>
+      <button id="testConnBtn" class="secondary">Проверить связь</button>
+    </div>
+    <p id="settingsStatus" class="hint"></p>
+  </details>
+
+  <div class="card">
+    <h2>Текст отчёта</h2>
+    <textarea id="reportText" placeholder="Вставь сюда текст отчёта за день..."></textarea>
+    <button id="processBtn">Провести ▶</button>
+    <p id="status"></p>
+  </div>
+
+  <div class="card">
+    <h2>Результат <span class="badge" id="logCount">пусто</span></h2>
+    <div class="toolbar">
+      <button id="clearLogBtn" class="secondary">Очистить</button>
+      <button id="copyLogBtn" class="secondary">Скопировать</button>
+    </div>
+    <div id="log">Здесь появится журнал обработки.</div>
+  </div>
 
 <script>
-async function testConnection() {
-  const token = document.getElementById('token').value.trim();
-  const resultEl = document.getElementById('result');
-  resultEl.className = 'pending';
-  resultEl.textContent = 'Проверяю...';
+'use strict';
 
-  if (!token) {
-    resultEl.className = 'fail';
-    resultEl.textContent = 'Вставь токен сначала.';
-    return;
+/* ===================== НАСТРОЙКИ / ХРАНИЛИЩЕ ===================== */
+
+const MS_BASE = "https://api.moysklad.ru/api/remap/1.2"; // реальный адрес МоегоСклада — только для meta.href внутри документов
+
+const CONFIG = { workerUrl: '', token: '', orgId: '', storeId: '' };
+
+function loadConfig() {
+  CONFIG.workerUrl = localStorage.getItem('ms_worker_url') || '';
+  CONFIG.token = localStorage.getItem('ms_token') || '';
+  CONFIG.orgId = localStorage.getItem('ms_org_id') || '';
+  CONFIG.storeId = localStorage.getItem('ms_store_id') || '';
+  document.getElementById('workerUrl').value = CONFIG.workerUrl;
+  document.getElementById('token').value = CONFIG.token;
+  document.getElementById('orgId').value = CONFIG.orgId;
+  document.getElementById('storeId').value = CONFIG.storeId;
+}
+
+function saveConfig() {
+  CONFIG.workerUrl = document.getElementById('workerUrl').value.trim().replace(/\/+$/, '');
+  CONFIG.token = document.getElementById('token').value.trim();
+  CONFIG.orgId = document.getElementById('orgId').value.trim();
+  CONFIG.storeId = document.getElementById('storeId').value.trim();
+  localStorage.setItem('ms_worker_url', CONFIG.workerUrl);
+  localStorage.setItem('ms_token', CONFIG.token);
+  localStorage.setItem('ms_org_id', CONFIG.orgId);
+  localStorage.setItem('ms_store_id', CONFIG.storeId);
+}
+
+function configComplete() {
+  return CONFIG.workerUrl && CONFIG.token && CONFIG.orgId && CONFIG.storeId;
+}
+
+function apiUrl(path) {
+  return CONFIG.workerUrl + path;
+}
+
+function msHeaders() {
+  return {
+    'Authorization': 'Bearer ' + CONFIG.token,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json;charset=utf-8',
+  };
+}
+
+/* ===================== ЖУРНАЛ (аналог print() из питон-скрипта) ===================== */
+
+const logEl = document.getElementById('log');
+const logCountEl = document.getElementById('logCount');
+let logLines = 0;
+
+function log(msg) {
+  console.log(msg);
+  logLines++;
+  logCountEl.textContent = logLines + ' строк';
+
+  let cls = 'l-info';
+  if (msg.includes('[OK]')) cls = 'l-ok';
+  else if (msg.includes('❗ПРОВЕРЬТЕ ЦЕНУ') || msg.includes('[ПРЕДУПРЕЖДЕНИЕ]') || msg.includes('ПЛАТЁЖ НЕ СОЗДАН')) cls = 'l-warn';
+  else if (msg.includes('[!!!]') || msg.includes('ОШИБКА')) cls = 'l-error';
+  else if (msg.includes('СКИДКА')) cls = 'l-discount';
+  else if (msg.includes('🎁') || msg.includes('ПОДАРОК')) cls = 'l-gift';
+  else if (msg.includes('[ПРОПУСК]')) cls = 'l-skip';
+  else if (msg.trim().startsWith('=>')) cls = 'l-success';
+  else if (!msg.startsWith(' ') && !msg.startsWith('Дата отгрузок')) cls = 'l-header';
+
+  const line = document.createElement('div');
+  line.className = cls;
+  line.textContent = msg;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function clearLog() {
+  logEl.innerHTML = '';
+  logLines = 0;
+  logCountEl.textContent = 'пусто';
+}
+
+/* ===================== ОКРУГЛЕНИЕ "КАК В PYTHON" (round half to even) ===================== */
+
+function pyRound(x, ndigits) {
+  ndigits = ndigits || 0;
+  const factor = Math.pow(10, ndigits);
+  const scaled = x * factor;
+  const floor = Math.floor(scaled);
+  const diff = scaled - floor;
+  let rounded;
+  if (Math.abs(diff - 0.5) < 1e-9) {
+    rounded = (floor % 2 === 0) ? floor : floor + 1;
+  } else {
+    rounded = Math.round(scaled);
+  }
+  return rounded / factor;
+}
+
+/* ===================== КЭШ ТОВАРОВ ===================== */
+
+let PRODUCTS_CACHE = {};
+
+const DISCOUNT_EXCLUDE_KEYWORDS = []; // ручной список сверх основного правила (по умолчанию пуст)
+
+async function loadProducts() {
+  log('Загружаю базу товаров из МоегоСклада...');
+  const resp = await fetch(apiUrl('/entity/product?limit=1000'), { headers: msHeaders() });
+  if (!resp.ok) {
+    log(`  [ОШИБКА API] Не удалось загрузить товары (код ${resp.status}): ${await resp.text()}`);
+    throw new Error('load_products failed');
+  }
+  const data = await resp.json();
+  PRODUCTS_CACHE = {};
+  for (const item of (data.rows || [])) {
+    const fullName = (item.name || '').trim();
+    const salePrices = item.salePrices || [];
+    const price = salePrices.length ? salePrices[0].value : 0;
+    const buyPrice = (item.buyPrice && item.buyPrice.value) || 0;
+    PRODUCTS_CACHE[fullName] = { meta: item.meta, price: price, buy_price: buyPrice };
+  }
+  log(`Загружено ${Object.keys(PRODUCTS_CACHE).length} товаров.`);
+  for (const n in PRODUCTS_CACHE) {
+    if (n.toLowerCase().includes('хамон')) log(`Найден в базе: '${n}'`);
+  }
+}
+
+/* ===================== ПОИСК ТОВАРА ПО НАЗВАНИЮ ИЗ ОТЧЁТА ===================== */
+
+const MANUAL_MAP = {
+  'хамон палета курадо nico 4,5 кг (нога) из испании': 'Хамон (Палета) Курадо 7+мес (нога) NICO (без набора) 4.5кг - 5.5кг',
+  'пармезан vacche rosse cantarelli': 'Пармезан Vacche Rosse Cantarelli ~300гр',
+  'камамбер-крем сыр "spanish cheese"': 'Камамбер-крем сыр "spanish cheese" 125гр',
+  'чеддер-крем "spanish cheese"': 'Чеддер-крем "spanish cheese" 125гр',
+  'базирон с трюфелем': 'Базирон с трюфелем вес',
+  'prima donna mature': 'Prima Dоnnа Mature (Красная)',
+  'ландана 1000': 'Ландана 1000',
+  'ландана mild goat': 'Ландана Mild Goat',
+  'ружетт (rougette)': 'Ружетт (Rougette)',
+  'бри ile de france': 'Бри ILe de France 125гр',
+  'манчего mini трюфель': 'Манчего mini Трюфель 190гр',
+  'оливки фаршированные кешью': 'Оливки фаршированные кешью в рассоле DELPHI 350гр',
+  'манчего dop (18 мес)': 'Манчего DOP (18 мес) 200гр',
+  'пармезан 70mesi cantarelli': 'Пармезан 70mesi Cantarelli (limited edition) ~300гр',
+  'манчего с белым трюфелем': 'Манчего с белым трюфелем',
+  'пармезан ferrarini vacche jersey': 'Ferrarini_VACCHE_JERSEY_300g Пармезан Феррарини 300 гр',
+  'пармезан 30 месяцев caseficio 993 250гр': 'Пармезан 30 месяцев Caseficio 993 250гр',
+  'пармезан 40мес cantarelli': 'Пармезан 40мес Cantarelli (limited edition) ~280гр',
+  'пармезан cantarelli 24 месяца ~1кг': 'Пармезан Cantarelli 24 месяца ~1кг',
+  'пармезан 24 месяца caseficio 993 ~1кг': 'Пармезан 24 месяца Caseficio 993 ~1кг',
+  'buffalo из буйволиного молока с трюфелем': 'Buffalo из буйволиного молока с трюфелем',
+  'зубная паста theramed': 'Зубная паста Theramed',
+  'бриет briette creamy & blue': 'Бриет Briette (асс.) 125гр',
+  'пармезан 36mesi cantarelli': 'Пармезан 36mesi Cantarelli (limited edition) ~300гр',
+  'бри kaserei': 'Бри Käserei 125гр',
+  'бри кaserei': 'Бри Käserei 125гр',
+  'камамбер kaserei': 'Камамбер Käserei 125гр',
+  'камамбер кaserei': 'Камамбер Käserei 125гр',
+  'ландана блю с какао': 'Ландана блю с какао (коровий)',
+  'пармезан 60mesi cantarelli': 'Пармезан 60mesi Cantarelli (limited edition) ~300гр',
+  'геитост tine (ekte geitost) 250гр': 'Геитост TINE (EKTE Geitost) 250гр',
+  'чеддер snоwdоniа веесhwооd': 'Чеддер SNОWDОNIА Веесhwооd 200гр',
+  'occelli бароло в виноградном жмыхе (весовой)': 'Occelli Бароло в виноградном жмыхе (весовой)',
+  'occelli с фруктами граппа (весовой)': 'Occelli с фруктами Граппа (весовой)',
+  'occelli в каштановых листьях (весовой)': 'Occelli в каштановых листьях (весовой)',
+  'пармезан 24mesi cantarelli (limited edition) ~300гр': 'Пармезан 24mesi Cantarelli (limited edition) ~300гр',
+  'old irish creamery irish sage': ' Old Irish (Ассорти вес.) OAK Smoked Red Wine Shraracha',
+  'масло оливковое с базиликом cretan mill 0,25л': 'Масло оливковое с базиликом CRETAN MILL 0,25л',
+  'ландана мёд (козий)': 'Ландана мёд (Козий)',
+  'ломо "5j cinco jotas" 100% иберико бейота 70гр': 'Ломо "5J Cinco Jotas" 100% Иберико Бейота 70гр',
+  'фуагра bloc de foie gras de canard carrefour original 200гр': 'Фуагра 200гр жб',
+  'оливки фаршированные пастой из лимона в рассоле delphi 350гр': 'Оливки фаршированные пастой из лимона в рассоле DELPHI 350гр',
+  'Вафельные трубочки с фундуком и какао-кремом Caprice 250гр': 'Вафельные трубочки с фундуком и какао-кремом Caprice 250гр',
+  'соус-дип сальса el sabor 315гр': 'Соус-дип сальса El Sabor 315гр',
+  'соус-дип сырный el sabor 315гр': 'Соус-дип сырный El Sabor 315гр',
+  'грана падано cantarelli ~250гр': 'Грана Падано Cantarelli ~250гр',
+  'манчего dop (9 мес)': 'Манчего DOP (9 мес)',
+  'олд амстердам (коровий)': 'Олд Амстердам (коровий)',
+  'Олд Амстердам коровий (резерв)': 'Олд Амстердам коровий (резерв)',
+};
+
+function findProductMeta(pRaw, weight) {
+  let query = pRaw.toLowerCase().trim();
+
+  if (query.includes('фуагра') && query.includes('150')) {
+    query = 'фуагра ассорти 150гр';
+  } else if (query.includes('фуагра') && (query.includes('130') || query.includes('130g'))) {
+    query = 'фуагра ассорти 130гр';
+  } else if (query.includes('бриет') || query.includes('briette')) {
+    query = 'бриет briette (асс.) 125гр';
   }
 
-  try {
-    const resp = await fetch('https://api.moysklad.ru/api/remap/1.2/entity/product?limit=1', {
-      method: 'GET',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Accept': 'application/json;charset=utf-8'
-      }
-    });
+  const queryClean = query.replace(/ä/g, 'a');
 
+  for (const key in MANUAL_MAP) {
+    if (queryClean.includes(key)) {
+      const correctName = MANUAL_MAP[key];
+      const correctNameClean = correctName.toLowerCase().replace(/ä/g, 'a');
+      for (const fullName in PRODUCTS_CACHE) {
+        const data = PRODUCTS_CACHE[fullName];
+        const msNameClean = fullName.trim().toLowerCase().replace(/ä/g, 'a');
+        if (msNameClean === correctNameClean) {
+          return { name: fullName, meta: data.meta, price: data.price, buy_price: data.buy_price || 0 };
+        }
+      }
+      log(`  [DEBUG] ВНИМАНИЕ: Словарь понял, что это '${correctName}', но не нашел точно такого названия в МС!`);
+    }
+  }
+
+  const queryWords = query.split(/[^а-яa-z0-9]/).filter(w => w.length >= 3);
+
+  for (const fullName in PRODUCTS_CACHE) {
+    const data = PRODUCTS_CACHE[fullName];
+    const nameLower = fullName.toLowerCase();
+    const matches = queryWords.filter(w => nameLower.includes(w)).length;
+    const isHamon = query.includes('хамон');
+    const threshold = isHamon ? 1.0 : 0.67;
+
+    if (queryWords.length > 0 && (matches / queryWords.length >= threshold)) {
+      if (weight && weight >= 0.4 && weight <= 0.6 && nameLower.includes('250') && !nameLower.includes('500')) continue;
+      if (weight && weight >= 0.2 && weight <= 0.3 && nameLower.includes('500') && !nameLower.includes('250')) continue;
+      if (query.includes('родригес') && !nameLower.includes('родригес')) continue;
+
+      return { name: fullName, meta: data.meta, price: data.price, buy_price: data.buy_price };
+    }
+  }
+
+  return null;
+}
+
+/* ===================== СКИДКИ ===================== */
+
+function detectDiscountPercent(blockText) {
+  const textLower = blockText.toLowerCase();
+
+  let m = textLower.match(/(\d{1,2})\s*%\s*ск/);
+  if (m) return parseInt(m[1], 10);
+
+  m = textLower.match(/-\s*(\d{1,2})\s*%/);
+  if (m) return parseInt(m[1], 10);
+
+  m = textLower.match(/\b\d{3,6}\s*\*\s*0[.,](\d{1,2})\b/);
+  if (m) {
+    const fracValue = parseFloat('0.' + m[1]);
+    return Math.round((1 - fracValue) * 100);
+  }
+  return null;
+}
+
+function isDiscountExcluded(item) {
+  const nameLower = (item._name || '').toLowerCase();
+  if (DISCOUNT_EXCLUDE_KEYWORDS.some(kw => nameLower.includes(kw))) return true;
+
+  const catalogPrice = item._catalog_price;
+  if (catalogPrice) {
+    const tolerance = Math.max(100, catalogPrice * 0.01);
+    if ((catalogPrice - item.price) > tolerance) return true;
+  }
+  return false;
+}
+
+/* ===================== ЦЕНА ИЗ ТЕКСТА ОТЧЁТА ===================== */
+
+function extractTextPrice(content) {
+  let priceRub = null;
+
+  let m = content.match(/\*\s*(\d+(?:[.,]\d+)?)\s*(?:₽|[Рр])\s*\/\s*100\s*г/);
+  if (m) {
+    priceRub = parseFloat(m[1].replace(',', '.')) * 10;
+  } else {
+    m = content.match(/(\d+(?:[.,]\d+)?)\s*(?:₽|руб)\s*\*\s*\d+/);
+    if (m) {
+      priceRub = parseFloat(m[1].replace(',', '.'));
+    } else {
+      m = content.match(/\*\s*(\d+(?:[.,]\d+)?)\s*(?:₽|руб)(?!\s*\/\s*100)/);
+      if (m) {
+        priceRub = parseFloat(m[1].replace(',', '.'));
+      } else {
+        m = content.match(/[-–—]\s*(\d+(?:[.,]\d+)?)\s*(?:₽|руб)\s*(?:\(.*\))?\s*$/);
+        if (m) priceRub = parseFloat(m[1].replace(',', '.'));
+      }
+    }
+  }
+
+  if (priceRub === null) return null;
+  return pyRound(priceRub * 100);
+}
+
+function reportPriceMismatch(productName, textPriceKop, catalogPriceKop) {
+  const tolerance = Math.max(100, catalogPriceKop * 0.01);
+  if (Math.abs(textPriceKop - catalogPriceKop) > tolerance) {
+    const diffRub = (textPriceKop - catalogPriceKop) / 100;
+    const sign = diffRub >= 0 ? '+' : '';
+    log(`  [❗ПРОВЕРЬТЕ ЦЕНУ] '${productName}': в отчёте ${(textPriceKop / 100).toFixed(2)} ₽, в МоемСкладе ${(catalogPriceKop / 100).toFixed(2)} ₽ ` +
+        `(разница ${sign}${diffRub.toFixed(2)} ₽). В документ поставлена цена ИЗ ОТЧЁТА — ` +
+        `проверьте, не ошибся ли менеджер или не занизил цену.`);
+  }
+}
+
+/* ===================== ТЕЛЕФОН / КОНТРАГЕНТ ===================== */
+
+function findPhone(text) {
+  const match = text.match(/(?:\+7|8)(?:[\s\-\(\)‑–—]*\d){10}/);
+  if (match) {
+    let cleanPhone = match[0].replace(/\D/g, '');
+    if (cleanPhone.startsWith('8')) cleanPhone = '7' + cleanPhone.slice(1);
+    return '+' + cleanPhone;
+  }
+  return '';
+}
+
+async function getOrCreateCounterparty(name, phone) {
+  const cleanPhone = phone ? phone.replace(/\D/g, '') : '';
+
+  if (cleanPhone && cleanPhone.length >= 10) {
+    const searchPhone = cleanPhone.slice(-10);
+    const resp = await fetch(apiUrl('/entity/counterparty?search=' + encodeURIComponent(searchPhone)), { headers: msHeaders() });
+    if (resp.ok) {
+      const data = await resp.json();
+      const rows = data.rows || [];
+      if (rows.length) {
+        log(`  [Контрагент] Найден по ТЕЛЕФОНУ: ${rows[0].name} (ID: ${rows[0].id})`);
+        return rows[0].id;
+      }
+    }
+  }
+
+  let resp = await fetch(apiUrl('/entity/counterparty?search=' + encodeURIComponent(name)), { headers: msHeaders() });
+  if (resp.ok) {
+    const data = await resp.json();
+    for (const row of (data.rows || [])) {
+      if (row.name.toLowerCase() === name.toLowerCase()) {
+        log(`  [Контрагент] Найден по точному ИМЕНИ: ${row.name}`);
+        return row.id;
+      }
+    }
+  }
+
+  const newCp = { name: name };
+  if (phone) newCp.phone = phone;
+
+  resp = await fetch(apiUrl('/entity/counterparty'), { method: 'POST', headers: msHeaders(), body: JSON.stringify(newCp) });
+  if (resp.status === 200 || resp.status === 201) {
+    const data = await resp.json();
+    log(`  [Контрагент] СОЗДАН НОВЫЙ: ${name} (Телефон: ${phone})`);
+    return data.id;
+  } else {
+    log(`  [ОШИБКА API] Не удалось создать контрагента '${name}'. ${await resp.text()}`);
+    return null;
+  }
+}
+
+/* ===================== ЗАЩИТА ОТ ПОВТОРНОГО ЗАПУСКА ===================== */
+
+async function demandAlreadyExists(cId, dateStr, descText) {
+  const params = `moment>=${dateStr} 00:00:00;moment<=${dateStr} 23:59:59`;
+  const resp = await fetch(apiUrl('/entity/demand?filter=' + encodeURIComponent(params) + '&limit=100'), { headers: msHeaders() });
+  if (!resp.ok) {
+    log(`  [ПРЕДУПРЕЖДЕНИЕ] Не удалось проверить дубликаты отгрузок (код ${resp.status}). Продолжаю без проверки.`);
+    return false;
+  }
+  const data = await resp.json();
+  const descNorm = descText.trim();
+  for (const row of (data.rows || [])) {
+    const agentHref = (row.agent && row.agent.meta && row.agent.meta.href) || '';
+    if (agentHref.endsWith('/counterparty/' + cId) && (row.description || '').trim() === descNorm) return true;
+  }
+  return false;
+}
+
+async function lossAlreadyExists(dateStr, descTextFull) {
+  const params = `moment>=${dateStr} 00:00:00;moment<=${dateStr} 23:59:59`;
+  const resp = await fetch(apiUrl('/entity/loss?filter=' + encodeURIComponent(params) + '&limit=100'), { headers: msHeaders() });
+  if (!resp.ok) {
+    log(`  [ПРЕДУПРЕЖДЕНИЕ] Не удалось проверить дубликаты списаний (код ${resp.status}). Продолжаю без проверки.`);
+    return false;
+  }
+  const data = await resp.json();
+  const descNorm = descTextFull.trim();
+  for (const row of (data.rows || [])) {
+    if ((row.description || '').trim() === descNorm) return true;
+  }
+  return false;
+}
+
+async function paymentAlreadyExists(cId, dateStr, descText) {
+  const params = `moment>=${dateStr} 00:00:00;moment<=${dateStr} 23:59:59`;
+  const resp = await fetch(apiUrl('/entity/paymentin?filter=' + encodeURIComponent(params) + '&limit=100'), { headers: msHeaders() });
+  if (!resp.ok) {
+    log(`  [ПРЕДУПРЕЖДЕНИЕ] Не удалось проверить дубликаты платежей (код ${resp.status}). Продолжаю без проверки.`);
+    return false;
+  }
+  const data = await resp.json();
+  const descNorm = descText.trim();
+  for (const row of (data.rows || [])) {
+    const agentHref = (row.agent && row.agent.meta && row.agent.meta.href) || '';
+    if (agentHref.endsWith('/counterparty/' + cId) && (row.description || '').trim() === descNorm) return true;
+  }
+  return false;
+}
+
+/* ===================== ИТОГО ИЗ ТЕКСТА ЗАКАЗА ===================== */
+
+function extractReportTotalKopecks(blockText) {
+  const m = blockText.match(/итого\s*:?\s*(.+)/i);
+  if (!m) return null;
+  const tail = m[1];
+  const nums = tail.match(/\d+(?:[.,]\d+)?/g);
+  if (!nums || !nums.length) return null;
+  const itogoRub = parseFloat(nums[nums.length - 1].replace(',', '.'));
+
+  let deliveryRub = 0.0;
+  const dm = blockText.match(/доставк\w*\s*:?\s*(\d+(?:[.,]\d+)?)/i);
+  if (dm) deliveryRub = parseFloat(dm[1].replace(',', '.'));
+
+  let junkRub = 0.0;
+  const junkRegex = /(?:аккумулятор|термопакет)[^\n=]*=\s*(\d+(?:[.,]\d+)?)/gi;
+  let jm;
+  while ((jm = junkRegex.exec(blockText)) !== null) {
+    junkRub += parseFloat(jm[1].replace(',', '.'));
+  }
+
+  const goodsRub = itogoRub - deliveryRub - junkRub;
+  return pyRound(goodsRub * 100);
+}
+
+/* ===================== СОЗДАНИЕ ДОКУМЕНТОВ ===================== */
+
+function stripInternalFields(items) {
+  return items.map(it => {
+    const out = {};
+    for (const k in it) if (!k.startsWith('_')) out[k] = it[k];
+    return out;
+  });
+}
+
+async function createDemand(cId, items, dateStr, descText) {
+  const payload = {
+    organization: { meta: { href: `${MS_BASE}/entity/organization/${CONFIG.orgId}`, type: 'organization' } },
+    agent: { meta: { href: `${MS_BASE}/entity/counterparty/${cId}`, type: 'counterparty' } },
+    store: { meta: { href: `${MS_BASE}/entity/store/${CONFIG.storeId}`, type: 'store' } },
+    moment: `${dateStr} 12:00:00`,
+    description: descText,
+    positions: stripInternalFields(items),
+  };
+  const resp = await fetch(apiUrl('/entity/demand'), { method: 'POST', headers: msHeaders(), body: JSON.stringify(payload) });
+  if (resp.status === 200 || resp.status === 201) return await resp.json();
+  log(`  !!! ОШИБКА МС (Код ${resp.status}): ${await resp.text()}`);
+  return null;
+}
+
+async function createPaymentIn(cId, demandMeta, amountKopecks, dateStr, descText) {
+  const payload = {
+    organization: { meta: { href: `${MS_BASE}/entity/organization/${CONFIG.orgId}`, type: 'organization' } },
+    agent: { meta: { href: `${MS_BASE}/entity/counterparty/${cId}`, type: 'counterparty' } },
+    sum: amountKopecks,
+    moment: `${dateStr} 12:00:00`,
+    description: descText,
+    operations: [{ meta: demandMeta, linkedSum: amountKopecks }],
+  };
+  const resp = await fetch(apiUrl('/entity/paymentin'), { method: 'POST', headers: msHeaders(), body: JSON.stringify(payload) });
+  if (resp.status === 200 || resp.status === 201) return true;
+  log(`  !!! ОШИБКА СОЗДАНИЯ ПЛАТЕЖА (Код ${resp.status}): ${await resp.text()}`);
+  return false;
+}
+
+async function createLoss(items, dateStr, descText) {
+  const payload = {
+    organization: { meta: { href: `${MS_BASE}/entity/organization/${CONFIG.orgId}`, type: 'organization' } },
+    store: { meta: { href: `${MS_BASE}/entity/store/${CONFIG.storeId}`, type: 'store' } },
+    moment: `${dateStr} 12:00:00`,
+    description: `🎁 Списание подарков по заказу:\n${descText}`,
+    positions: stripInternalFields(items),
+  };
+  const resp = await fetch(apiUrl('/entity/loss'), { method: 'POST', headers: msHeaders(), body: JSON.stringify(payload) });
+  if (resp.status === 200 || resp.status === 201) return true;
+  log(`  !!! ОШИБКА СОЗДАНИЯ СПИСАНИЯ (Код ${resp.status}): ${await resp.text()}`);
+  return false;
+}
+
+/* ===================== ГЛАВНАЯ ОБРАБОТКА ОТЧЁТА ===================== */
+
+async function processReport(reportText) {
+  const dateMatch = reportText.match(/(\d{1,2})\.(\d{2})/);
+  let reportDate;
+  if (dateMatch) {
+    const day = dateMatch[1].padStart(2, '0');
+    const month = dateMatch[2];
+    const year = new Date().getFullYear(); // берём текущий год динамически (в питон-версии год был захардкожен)
+    reportDate = `${year}-${month}-${day}`;
+  } else {
+    reportDate = new Date().toISOString().slice(0, 10);
+  }
+
+  const ordersRaw = reportText.split(/(?:\n|^)\s*(\d+\.\s*(?:НЕ\s*)?О[Р]?ПЛАЧЕН[^\n]*|0\.\d+\s+|\d+\.\s*(?=[Гг]риша))/);
+  const orders = [];
+  for (let i = 1; i < ordersRaw.length; i += 2) {
+    const header = (ordersRaw[i] || '').trim();
+    const body = (ordersRaw[i + 1] || '').trim();
+    orders.push([header, body]);
+  }
+
+  log(`Дата отгрузок: ${reportDate}. Найдено заказов: ${orders.length}`);
+
+  for (const [header, block] of orders) {
+    const lines = block.trim().split('\n').map(l => l.trim()).filter(l => l);
+    if (!lines.length) continue;
+
+    let name;
+    if (/^\d+[)\.]\s+/.test(lines[0]) ||
+        (/\d+\s*(?:₽|руб)/.test(lines[0]) && !['итого', 'доставка'].some(x => lines[0].toLowerCase().includes(x)))) {
+      name = 'Без имени';
+    } else {
+      name = lines[0];
+    }
+
+    let itemsSell = [];
+    let itemsLoss = [];
+    let lastItem = null;
+
+    for (const line of lines) {
+      const lineLower = line.toLowerCase();
+      const isItem = /^\d+[)\.]\s+/.test(line) || (
+        /(\d+\s*(?:₽|руб)|\s+[-–—]\s*\d+\s*$|🎁|подарок|презент|\s+[-–—=]\s*0\s*(?:₽|руб)?\s*$)/.test(line) &&
+        !['итого', 'доставк', 'скидка', 'выручка', 'оплат'].some(x => lineLower.includes(x))
+      );
+
+      if (!isItem) continue;
+
+      let content = line.replace(/^\d+[)\.]\s*/, '').trim();
+
+      const bracketMatch = content.match(/\(([ \d.+]+)\)/);
+      let weight;
+      if (bracketMatch && /\d+\.\d+/.test(bracketMatch[1])) {
+        const weights = bracketMatch[1].match(/\d+\.\d+/g) || [];
+        weight = weights.length ? pyRound(weights.reduce((s, w) => s + parseFloat(w), 0), 3) : 1.0;
+      } else {
+        const mEq = content.match(/\*\s*(\d+(?:\.\d+)?)\s*(?:=|$)/);
+        if (mEq) {
+          weight = parseFloat(mEq[1]);
+        } else {
+          const mPieces = content.match(/(\d+(?:\.\d+)?)\s*\*\s*\d+\s*(?:₽|руб)?/);
+          weight = mPieces ? parseFloat(mPieces[1]) : 1.0;
+        }
+      }
+
+      const splitRegex = /[-–—]\s*\d|\(\s*\d+\.\d+|\s\d+\s*\*\s*\d+(?:₽|руб)?|\s\d+\s*(?:₽|руб)/;
+      let pRaw = content.split(splitRegex)[0].trim();
+
+      const pRawLetters = pRaw.replace(/[^а-яА-Яa-zA-Z]/g, '');
+      if (!pRawLetters && content.includes('*') && lastItem !== null) {
+        const oldQty = lastItem.quantity;
+        lastItem.quantity = weight;
+        let priceNote = '';
+        const contPrice = extractTextPrice(content);
+        if (contPrice !== null) {
+          const catalogPrice = lastItem._catalog_price !== undefined ? lastItem._catalog_price : contPrice;
+          reportPriceMismatch(lastItem._name || '?', contPrice, catalogPrice);
+          lastItem.price = contPrice;
+          priceNote = `, цена -> ${(contPrice / 100).toFixed(2)} ₽`;
+        }
+        log(`  [ДОПИСАНО КОЛ-ВО] Строка '${line}' — это продолжение предыдущей позиции. Кол-во исправлено: ${oldQty} -> ${weight}${priceNote}`);
+        continue;
+      }
+
+      if (['аккумулятор', 'термопакет', 'доставк', 'комиссия', 'купон', 'отправка', 'пакет'].some(x => lineLower.includes(x))) continue;
+
+      const justLetters = lineLower.replace(/[^а-яa-z]/g, '');
+      if (['сырныйпрезент', 'подарок', 'подароккзаказу'].includes(justLetters)) continue;
+
+      const isGift = /🎁|подарок|презент/.test(lineLower) || /[-–—=]\s*0\s*(?:₽|руб)?\s*$/.test(lineLower);
+
+      pRaw = pRaw.replace(/(подарок к заказу|подарок|сырный презент|🎁|\(?не режем\)?)/gi, '').trim();
+      pRaw = pRaw.replace(/[-–—]\s*$/, '').trim();
+
+      if (!pRaw) continue;
+
+      const productData = findProductMeta(pRaw, weight);
+      if (!productData) {
+        log(`  [!!!] ВНИМАНИЕ: Товар '${pRaw}' не найден!`);
+        continue;
+      }
+
+      if (isGift) {
+        log(`  [🎁 ПОДАРОК] Товар '${pRaw}' (Кол-во: ${weight}) -> В СПИСАНИЕ`);
+        const newItem = { quantity: weight, assortment: { meta: productData.meta }, price: productData.buy_price, _name: productData.name };
+        itemsLoss.push(newItem);
+        lastItem = newItem;
+      } else {
+        let sellPrice = productData.price;
+        const textPrice = extractTextPrice(content);
+        if (textPrice !== null) {
+          reportPriceMismatch(productData.name, textPrice, productData.price);
+          sellPrice = textPrice;
+        }
+        log(`  [OK] Товар '${pRaw}' найден как '${productData.name}' (Кол-во: ${weight}, Цена: ${(sellPrice / 100).toFixed(2)} ₽)`);
+        const newItem = { quantity: weight, assortment: { meta: productData.meta }, price: sellPrice, _name: productData.name, _catalog_price: productData.price };
+        itemsSell.push(newItem);
+        lastItem = newItem;
+      }
+    }
+
+    // --- УМНОЕ СПАСЕНИЕ ---
+    if (!itemsSell.length && !itemsLoss.length) {
+      for (const line of lines.slice(1)) {
+        const lineLower = line.toLowerCase();
+        if (['итого', 'доставка', 'скидка', 'выручка', 'свз', 'сдэк', 'оплат'].some(x => lineLower.includes(x))) continue;
+
+        const productData = findProductMeta(line, 1.0);
+        if (productData) {
+          let fallbackPrice = productData.price;
+          const textPrice = extractTextPrice(line);
+          if (textPrice !== null) {
+            reportPriceMismatch(productData.name, textPrice, productData.price);
+            fallbackPrice = textPrice;
+          }
+          log(`  [SMART FALLBACK] Скрытый товар спасен: '${line}' -> '${productData.name}' (Цена: ${(fallbackPrice / 100).toFixed(2)} ₽)`);
+          itemsSell.push({ quantity: 1.0, assortment: { meta: productData.meta }, price: fallbackPrice, _name: productData.name, _catalog_price: productData.price });
+        }
+      }
+    }
+
+    // --- АВТОСКИДКА ---
+    if (itemsSell.length) {
+      const discountPercent = detectDiscountPercent(block);
+      if (discountPercent) {
+        const discounted = [];
+        const excluded = [];
+        for (const it of itemsSell) {
+          if (isDiscountExcluded(it)) {
+            excluded.push(it._name);
+          } else {
+            it.discount = discountPercent;
+            discounted.push(it._name);
+          }
+        }
+        if (discounted.length) log(`  [СКИДКА ${discountPercent}%] Применена к: ${discounted.join(', ')}`);
+        if (excluded.length) log(`  [СКИДКА ${discountPercent}%] НЕ применена (в списке исключений) к: ${excluded.join(', ')}`);
+      }
+    }
+
+    // --- ОТГРУЗКА ---
+    if (!itemsSell.length) {
+      log(`  [ПРОПУСК] В заказе [${header}] (${name}) не найдено товаров. Отгрузка не создана.`);
+    } else if (header.toUpperCase().includes('НЕ ОПЛАЧЕН')) {
+      log(`  [ПРОПУСК] Заказ [${header}] (${name}) НЕ ОПЛАЧЕН. Отгрузка отменена.`);
+    } else {
+      const fullDesc = `${header}\n${block.trim()}`;
+      const cId = await getOrCreateCounterparty(name, findPhone(block));
+      if (cId) {
+        if (await demandAlreadyExists(cId, reportDate, fullDesc)) {
+          log(`  [ПРОПУСК] Отгрузка [${header}] (${name}) уже есть в МоемСкладе (похоже, отчёт уже обрабатывался) — дубль не создаю.`);
+        } else {
+          const demandResult = await createDemand(cId, itemsSell, reportDate, fullDesc);
+          if (demandResult) {
+            log(`  => Отгрузка [${header}] (${name}) успешно создана!`);
+
+            const calculatedKop = itemsSell.reduce((s, it) => s + it.quantity * it.price * (1 - (it.discount || 0) / 100), 0);
+            const reportKop = extractReportTotalKopecks(block);
+            if (reportKop === null) {
+              log(`  [ПЛАТЁЖ] В заказе не нашлась строка 'Итого' для сверки — платёж не создаю, проведите вручную.`);
+            } else {
+              const toleranceKop = Math.max(200, calculatedKop * 0.001);
+              const diffKop = calculatedKop - reportKop;
+              if (Math.abs(diffKop) <= toleranceKop) {
+                const paymentDesc = fullDesc;
+                const paymentSum = demandResult.sum !== undefined ? demandResult.sum : pyRound(calculatedKop);
+                if (await paymentAlreadyExists(cId, reportDate, paymentDesc)) {
+                  log(`  [ПРОПУСК] Входящий платёж для [${header}] (${name}) уже есть в МоемСкладе — дубль не создаю.`);
+                } else if (await createPaymentIn(cId, demandResult.meta, paymentSum, reportDate, paymentDesc)) {
+                  log(`  => 💰 Входящий платёж на ${(paymentSum / 100).toFixed(2)} ₽ для [${header}] (${name}) создан (сумма позиций совпала с отчётом).`);
+                } else {
+                  log(`  [ОШИБКА API] МойСклад не смог создать платёж для '${name}'.`);
+                }
+              } else {
+                const sign = diffKop >= 0 ? '+' : '';
+                log(`  [ПЛАТЁЖ НЕ СОЗДАН] Сумма по позициям (${(calculatedKop / 100).toFixed(2)} ₽) не совпала с 'Итого' в отчёте ` +
+                    `за вычетом доставки/мусора (${(reportKop / 100).toFixed(2)} ₽, разница ${sign}${(diffKop / 100).toFixed(2)} ₽). ` +
+                    `Проверьте заказ [${header}] (${name}) и проведите оплату вручную.`);
+              }
+            }
+          } else {
+            log(`  [ОШИБКА API] МойСклад не смог создать отгрузку для '${name}'.`);
+          }
+        }
+      }
+    }
+
+    // --- СПИСАНИЕ ПОДАРКОВ ---
+    if (itemsLoss.length) {
+      const fullDesc = `${header}\n${block.trim()}`;
+      const fullLossDesc = `🎁 Списание подарков по заказу:\n${fullDesc}`;
+      if (await lossAlreadyExists(reportDate, fullLossDesc)) {
+        log(`  [ПРОПУСК] Списание подарков для [${header}] (${name}) уже есть в МоемСкладе — дубль не создаю.`);
+      } else if (await createLoss(itemsLoss, reportDate, fullDesc)) {
+        log(`  => 🎁 Списание подарков для [${header}] (${name}) успешно создано!`);
+      } else {
+        log(`  [ОШИБКА API] МойСклад не смог создать списание подарков для '${name}'.`);
+      }
+    }
+  }
+
+  log('Готово.');
+}
+
+/* ===================== UI ===================== */
+
+const statusEl = document.getElementById('status');
+const processBtn = document.getElementById('processBtn');
+const settingsStatusEl = document.getElementById('settingsStatus');
+
+document.getElementById('saveSettingsBtn').addEventListener('click', () => {
+  saveConfig();
+  settingsStatusEl.textContent = '✓ Сохранено на этом устройстве.';
+  setTimeout(() => { settingsStatusEl.textContent = ''; }, 3000);
+});
+
+document.getElementById('testConnBtn').addEventListener('click', async () => {
+  saveConfig();
+  if (!CONFIG.workerUrl || !CONFIG.token) {
+    settingsStatusEl.textContent = '✗ Укажи адрес прокси и токен.';
+    return;
+  }
+  settingsStatusEl.textContent = 'Проверяю...';
+  try {
+    const resp = await fetch(apiUrl('/entity/product?limit=1'), { headers: msHeaders() });
     if (resp.ok) {
       const data = await resp.json();
       const total = data.meta ? data.meta.size : '?';
-      resultEl.className = 'ok';
-      resultEl.textContent =
-        'УСПЕХ! Браузер смог напрямую обратиться к МоемуСкладу.\n' +
-        'HTTP статус: ' + resp.status + '\n' +
-        'Всего товаров в базе: ' + total + '\n\n' +
-        'Значит CORS не блокирует — можно строить полноценное веб-приложение без сервера.';
+      settingsStatusEl.textContent = `✓ Связь есть! Товаров в базе: ${total}.`;
     } else {
       const text = await resp.text();
-      resultEl.className = 'fail';
-      resultEl.textContent =
-        'Запрос дошёл до сервера, но вернулась ошибка.\n' +
-        'HTTP статус: ' + resp.status + '\n' +
-        'Ответ: ' + text + '\n\n' +
-        'Это НЕ проблема CORS (запрос прошёл через браузер) — скорее всего дело в самом токене или правах доступа.';
+      settingsStatusEl.textContent = `✗ Прокси ответил, но МойСклад вернул ошибку ${resp.status}: ${text.slice(0, 150)}`;
     }
   } catch (err) {
-    resultEl.className = 'fail';
-    resultEl.textContent =
-      'ОШИБКА СЕТИ / CORS.\n' +
-      'Браузер заблокировал запрос ДО того, как получил ответ от сервера — ' +
-      'это типичный признак того, что МойСклад не разрешает прямые запросы из браузера (нет CORS-заголовков).\n\n' +
-      'Техническая ошибка: ' + err.message + '\n\n' +
-      'Если видишь это — значит веб-страница без своего сервера работать не будет, ' +
-      'нужен обходной путь (небольшой прокси-сервер).';
+    settingsStatusEl.textContent = `✗ Не удалось достучаться до прокси: ${err.message}`;
   }
-}
+});
+
+document.getElementById('clearLogBtn').addEventListener('click', clearLog);
+
+document.getElementById('copyLogBtn').addEventListener('click', async () => {
+  const text = Array.from(logEl.children).map(el => el.textContent).join('\n') || logEl.textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    statusEl.textContent = 'Журнал скопирован в буфер обмена.';
+  } catch (e) {
+    statusEl.textContent = 'Не удалось скопировать автоматически — выдели текст вручную.';
+  }
+});
+
+processBtn.addEventListener('click', async () => {
+  loadConfig();
+  if (!configComplete()) {
+    statusEl.textContent = '✗ Заполни все настройки подключения перед запуском (см. ⚙️ выше).';
+    document.getElementById('settingsBlock').open = true;
+    return;
+  }
+  const reportText = document.getElementById('reportText').value;
+  if (!reportText.trim()) {
+    statusEl.textContent = '✗ Вставь текст отчёта.';
+    return;
+  }
+
+  clearLog();
+  processBtn.disabled = true;
+  processBtn.textContent = 'Обрабатываю...';
+  statusEl.textContent = '';
+
+  try {
+    await loadProducts();
+    await processReport(reportText);
+    statusEl.textContent = '✓ Обработка завершена. Проверь журнал ниже.';
+  } catch (err) {
+    log('  [!!!] КРИТИЧЕСКАЯ ОШИБКА: ' + (err && err.message ? err.message : String(err)));
+    statusEl.textContent = '✗ Обработка прервана из-за ошибки — см. журнал.';
+  } finally {
+    processBtn.disabled = false;
+    processBtn.textContent = 'Провести ▶';
+  }
+});
+
+loadConfig();
 </script>
 </body>
 </html>
