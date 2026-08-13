@@ -503,7 +503,14 @@ async function paymentAlreadyExists(cId, dateStr, descText) {
 /* ===================== ИТОГО ИЗ ТЕКСТА ЗАКАЗА ===================== */
 
 function extractReportTotalKopecks(blockText) {
-  const m = blockText.match(/итого\s*:?\s*(.+)/i);
+  // Приоритет: строка "Суммарный итог" — она встречается, когда один клиент
+  // фактически сделал НЕСКОЛЬКО под-заказов под одним заголовком (каждый со своим
+  // "Итого:"), и в конце менеджер подводит ОБЩИЙ итог. Если её нет — берём первую
+  // обычную строку "Итого:" (как раньше).
+  let m = blockText.match(/суммарный\s+итог[а-яё]*\s*:?\s*(.+)/i);
+  if (!m) {
+    m = blockText.match(/итого\s*:?\s*(.+)/i);
+  }
   if (!m) return null;
   const tail = m[1];
   const nums = tail.match(/\d+(?:[.,]\d+)?/g);
@@ -511,7 +518,10 @@ function extractReportTotalKopecks(blockText) {
   const itogoRub = parseFloat(nums[nums.length - 1].replace(',', '.'));
 
   let deliveryRub = 0.0;
-  const dm = blockText.match(/доставк\w*\s*:?\s*(\d+(?:[.,]\d+)?)/i);
+  // ВАЖНО: \w в JS матчит только [A-Za-z0-9_] (в отличие от Python, где \w матчит
+  // и кириллицу). Поэтому здесь нужен явный класс кириллических букв, иначе
+  // "доставка"/"доставки" не находится и доставка не вычитается из "Итого".
+  const dm = blockText.match(/доставк[а-яё]*\s*:?\s*(\d+(?:[.,]\d+)?)/i);
   if (dm) deliveryRub = parseFloat(dm[1].replace(',', '.'));
 
   let junkRub = 0.0;
