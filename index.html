@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Тест подключения к МоемуСкладу</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 480px; margin: 0 auto; padding: 20px; background: #f5f5f7; }
+  h1 { font-size: 18px; }
+  input { width: 100%; padding: 12px; font-size: 16px; box-sizing: border-box; margin-bottom: 12px; border: 1px solid #ccc; border-radius: 8px; }
+  button { width: 100%; padding: 14px; font-size: 16px; background: #007aff; color: white; border: none; border-radius: 8px; }
+  button:active { background: #005ecb; }
+  #result { margin-top: 16px; padding: 14px; border-radius: 8px; white-space: pre-wrap; font-size: 14px; line-height: 1.4; }
+  .ok { background: #d4f7dc; color: #14532d; }
+  .fail { background: #fde2e2; color: #7f1d1d; }
+  .pending { background: #eee; color: #333; }
+</style>
+</head>
+<body>
+  <h1>Тест: может ли браузер напрямую достучаться до API МоегоСклада?</h1>
+  <p>Вставь токен и нажми кнопку. Это только проверка подключения — ничего не создаётся и не меняется.</p>
+  <input type="text" id="token" placeholder="Токен МоегоСклада">
+  <button onclick="testConnection()">Проверить подключение</button>
+  <div id="result" class="pending">Результат появится здесь.</div>
+
+<script>
+async function testConnection() {
+  const token = document.getElementById('token').value.trim();
+  const resultEl = document.getElementById('result');
+  resultEl.className = 'pending';
+  resultEl.textContent = 'Проверяю...';
+
+  if (!token) {
+    resultEl.className = 'fail';
+    resultEl.textContent = 'Вставь токен сначала.';
+    return;
+  }
+
+  try {
+    const resp = await fetch('https://api.moysklad.ru/api/remap/1.2/entity/product?limit=1', {
+      method: 'GET',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Accept': 'application/json;charset=utf-8'
+      }
+    });
+
+    if (resp.ok) {
+      const data = await resp.json();
+      const total = data.meta ? data.meta.size : '?';
+      resultEl.className = 'ok';
+      resultEl.textContent =
+        'УСПЕХ! Браузер смог напрямую обратиться к МоемуСкладу.\n' +
+        'HTTP статус: ' + resp.status + '\n' +
+        'Всего товаров в базе: ' + total + '\n\n' +
+        'Значит CORS не блокирует — можно строить полноценное веб-приложение без сервера.';
+    } else {
+      const text = await resp.text();
+      resultEl.className = 'fail';
+      resultEl.textContent =
+        'Запрос дошёл до сервера, но вернулась ошибка.\n' +
+        'HTTP статус: ' + resp.status + '\n' +
+        'Ответ: ' + text + '\n\n' +
+        'Это НЕ проблема CORS (запрос прошёл через браузер) — скорее всего дело в самом токене или правах доступа.';
+    }
+  } catch (err) {
+    resultEl.className = 'fail';
+    resultEl.textContent =
+      'ОШИБКА СЕТИ / CORS.\n' +
+      'Браузер заблокировал запрос ДО того, как получил ответ от сервера — ' +
+      'это типичный признак того, что МойСклад не разрешает прямые запросы из браузера (нет CORS-заголовков).\n\n' +
+      'Техническая ошибка: ' + err.message + '\n\n' +
+      'Если видишь это — значит веб-страница без своего сервера работать не будет, ' +
+      'нужен обходной путь (небольшой прокси-сервер).';
+  }
+}
+</script>
+</body>
+</html>
