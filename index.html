@@ -771,23 +771,34 @@ async function processReport(reportText) {
             if (reportKop === null) {
               log(`  [ПЛАТЁЖ] В заказе не нашлась строка 'Итого' для сверки — платёж не создаю, проведите вручную.`);
             } else {
-              const toleranceKop = Math.max(200, calculatedKop * 0.001);
+              // Допуск на автосоздание платежа: до 50 ₽ (или 0.1% для крупных сумм, что больше) —
+              // мелкая погрешность округления больше не блокирует платёж. Но о ЛЮБОМ ненулевом
+              // расхождении (даже в пределах допуска) ВСЕГДА печатается уведомление — чтобы
+              // руководитель мог сам проверить, откуда оно взялось.
+              const toleranceKop = Math.max(5000, calculatedKop * 0.001);
               const diffKop = calculatedKop - reportKop;
+              const hasMismatch = Math.abs(diffKop) > 1; // >1 копейки — чтобы не шуметь на копеечные ошибки округления float
+
+              if (hasMismatch) {
+                const sign = diffKop >= 0 ? '+' : '';
+                log(`  [❗НЕСОСТЫКОВКА] Сумма по позициям (${(calculatedKop / 100).toFixed(2)} ₽) не совпадает с 'Итого' в отчёте ` +
+                    `за вычетом доставки/мусора (${(reportKop / 100).toFixed(2)} ₽, разница ${sign}${(diffKop / 100).toFixed(2)} ₽). ` +
+                    `Заказ [${header}] (${name}) — проверьте, пожалуйста.`);
+              }
+
               if (Math.abs(diffKop) <= toleranceKop) {
                 const paymentDesc = fullDesc;
                 const paymentSum = demandResult.sum !== undefined ? demandResult.sum : pyRound(calculatedKop);
                 if (await paymentAlreadyExists(cId, reportDate, paymentDesc)) {
                   log(`  [ПРОПУСК] Входящий платёж для [${header}] (${name}) уже есть в МоемСкладе — дубль не создаю.`);
                 } else if (await createPaymentIn(cId, demandResult.meta, paymentSum, reportDate, paymentDesc)) {
-                  log(`  => 💰 Входящий платёж на ${(paymentSum / 100).toFixed(2)} ₽ для [${header}] (${name}) создан (сумма позиций совпала с отчётом).`);
+                  log(`  => 💰 Входящий платёж на ${(paymentSum / 100).toFixed(2)} ₽ для [${header}] (${name}) создан` +
+                      `${hasMismatch ? ' (в пределах допустимой погрешности — см. уведомление выше)' : ' (сумма позиций совпала с отчётом)'}.`);
                 } else {
                   log(`  [ОШИБКА API] МойСклад не смог создать платёж для '${name}'.`);
                 }
               } else {
-                const sign = diffKop >= 0 ? '+' : '';
-                log(`  [ПЛАТЁЖ НЕ СОЗДАН] Сумма по позициям (${(calculatedKop / 100).toFixed(2)} ₽) не совпала с 'Итого' в отчёте ` +
-                    `за вычетом доставки/мусора (${(reportKop / 100).toFixed(2)} ₽, разница ${sign}${(diffKop / 100).toFixed(2)} ₽). ` +
-                    `Проверьте заказ [${header}] (${name}) и проведите оплату вручную.`);
+                log(`  [ПЛАТЁЖ НЕ СОЗДАН] Расхождение больше допустимого предела (${(toleranceKop / 100).toFixed(2)} ₽) — платёж не создаю, проведите оплату вручную.`);
               }
             }
           } else {
