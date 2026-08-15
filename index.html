@@ -58,39 +58,39 @@
 </style>
 </head>
 <body>
- 
+
   <h1>Обработка отчёта продаж</h1>
   <p class="hint">Вставь текст отчёта, нажми «Провести». Приложение создаст отгрузки, списания подарков и входящие платежи в МоемСкладе — как раньше делал скрипт на компьютере.</p>
- 
+
   <details id="settingsBlock">
     <summary>⚙️ Настройки подключения</summary>
- 
+
     <label for="workerUrl">Адрес прокси (Cloudflare Worker)</label>
     <input type="text" id="workerUrl" placeholder="https://ms-proxy.твой-ник.workers.dev" autocapitalize="off" autocorrect="off">
- 
+
     <label for="token">Токен МоегоСклада</label>
     <input type="password" id="token" placeholder="Bearer-токен" autocapitalize="off" autocorrect="off">
- 
+
     <label for="orgId">ID организации (organization)</label>
     <input type="text" id="orgId" placeholder="например C01510b3-ecc2-...">
- 
+
     <label for="storeId">ID склада (store)</label>
     <input type="text" id="storeId" placeholder="например c0170072-ecc2-...">
- 
+
     <div class="toolbar">
       <button id="saveSettingsBtn">Сохранить</button>
       <button id="testConnBtn" class="secondary">Проверить связь</button>
     </div>
     <p id="settingsStatus" class="hint"></p>
   </details>
- 
+
   <div class="card">
     <h2>Текст отчёта</h2>
     <textarea id="reportText" placeholder="Вставь сюда текст отчёта за день..."></textarea>
     <button id="processBtn">Провести ▶</button>
     <p id="status"></p>
   </div>
- 
+
   <div class="card">
     <h2>Результат <span class="badge" id="logCount">пусто</span></h2>
     <div class="toolbar">
@@ -99,16 +99,16 @@
     </div>
     <div id="log">Здесь появится журнал обработки.</div>
   </div>
- 
+
 <script>
 'use strict';
- 
+
 /* ===================== НАСТРОЙКИ / ХРАНИЛИЩЕ ===================== */
- 
+
 const MS_BASE = "https://api.moysklad.ru/api/remap/1.2"; // реальный адрес МоегоСклада — только для meta.href внутри документов
- 
+
 const CONFIG = { workerUrl: '', token: '', orgId: '', storeId: '' };
- 
+
 function loadConfig() {
   CONFIG.workerUrl = localStorage.getItem('ms_worker_url') || '';
   CONFIG.token = localStorage.getItem('ms_token') || '';
@@ -119,7 +119,7 @@ function loadConfig() {
   document.getElementById('orgId').value = CONFIG.orgId;
   document.getElementById('storeId').value = CONFIG.storeId;
 }
- 
+
 function saveConfig() {
   CONFIG.workerUrl = document.getElementById('workerUrl').value.trim().replace(/\/+$/, '');
   CONFIG.token = document.getElementById('token').value.trim();
@@ -130,15 +130,15 @@ function saveConfig() {
   localStorage.setItem('ms_org_id', CONFIG.orgId);
   localStorage.setItem('ms_store_id', CONFIG.storeId);
 }
- 
+
 function configComplete() {
   return CONFIG.workerUrl && CONFIG.token && CONFIG.orgId && CONFIG.storeId;
 }
- 
+
 function apiUrl(path) {
   return CONFIG.workerUrl + path;
 }
- 
+
 function msHeaders() {
   return {
     'Authorization': 'Bearer ' + CONFIG.token,
@@ -146,18 +146,18 @@ function msHeaders() {
     'Accept': 'application/json;charset=utf-8',
   };
 }
- 
+
 /* ===================== ЖУРНАЛ (аналог print() из питон-скрипта) ===================== */
- 
+
 const logEl = document.getElementById('log');
 const logCountEl = document.getElementById('logCount');
 let logLines = 0;
- 
+
 function log(msg) {
   console.log(msg);
   logLines++;
   logCountEl.textContent = logLines + ' строк';
- 
+
   let cls = 'l-info';
   if (msg.includes('[OK]')) cls = 'l-ok';
   else if (msg.includes('❗ПРОВЕРЬТЕ ЦЕНУ') || msg.includes('[ПРЕДУПРЕЖДЕНИЕ]') || msg.includes('ПЛАТЁЖ НЕ СОЗДАН')) cls = 'l-warn';
@@ -167,22 +167,22 @@ function log(msg) {
   else if (msg.includes('[ПРОПУСК]')) cls = 'l-skip';
   else if (msg.trim().startsWith('=>')) cls = 'l-success';
   else if (!msg.startsWith(' ') && !msg.startsWith('Дата отгрузок')) cls = 'l-header';
- 
+
   const line = document.createElement('div');
   line.className = cls;
   line.textContent = msg;
   logEl.appendChild(line);
   logEl.scrollTop = logEl.scrollHeight;
 }
- 
+
 function clearLog() {
   logEl.innerHTML = '';
   logLines = 0;
   logCountEl.textContent = 'пусто';
 }
- 
+
 /* ===================== ОКРУГЛЕНИЕ "КАК В PYTHON" (round half to even) ===================== */
- 
+
 function pyRound(x, ndigits) {
   ndigits = ndigits || 0;
   const factor = Math.pow(10, ndigits);
@@ -197,13 +197,13 @@ function pyRound(x, ndigits) {
   }
   return rounded / factor;
 }
- 
+
 /* ===================== КЭШ ТОВАРОВ ===================== */
- 
+
 let PRODUCTS_CACHE = {};
- 
+
 const DISCOUNT_EXCLUDE_KEYWORDS = []; // ручной список сверх основного правила (по умолчанию пуст)
- 
+
 async function loadProducts() {
   log('Загружаю базу товаров из МоегоСклада...');
   const resp = await fetch(apiUrl('/entity/product?limit=1000'), { headers: msHeaders() });
@@ -225,9 +225,9 @@ async function loadProducts() {
     if (n.toLowerCase().includes('хамон')) log(`Найден в базе: '${n}'`);
   }
 }
- 
+
 /* ===================== ПОИСК ТОВАРА ПО НАЗВАНИЮ ИЗ ОТЧЁТА ===================== */
- 
+
 const MANUAL_MAP = {
   'хамон палета курадо nico 4,5 кг (нога) из испании': 'Хамон (Палета) Курадо 7+мес (нога) NICO (без набора) 4.5кг - 5.5кг',
   'пармезан vacche rosse cantarelli': 'Пармезан Vacche Rosse Cantarelli ~300гр',
@@ -278,11 +278,12 @@ const MANUAL_MAP = {
   'манчего dop (9 мес)': 'Манчего DOP (9 мес)',
   'олд амстердам (коровий)': 'Олд Амстердам (коровий)',
   'Олд Амстердам коровий (резерв)': 'Олд Амстердам коровий (резерв)',
+  'набор хамон (палета) серрано espana la barrica': 'Набор Хамон (Палета) Серрано ESPANA la Barrica',
 };
- 
+
 function findProductMeta(pRaw, weight) {
   let query = pRaw.toLowerCase().trim();
- 
+
   if (query.includes('фуагра') && query.includes('150')) {
     query = 'фуагра ассорти 150гр';
   } else if (query.includes('фуагра') && (query.includes('130') || query.includes('130g'))) {
@@ -290,9 +291,9 @@ function findProductMeta(pRaw, weight) {
   } else if (query.includes('бриет') || query.includes('briette')) {
     query = 'бриет briette (асс.) 125гр';
   }
- 
+
   const queryClean = query.replace(/ä/g, 'a');
- 
+
   for (const key in MANUAL_MAP) {
     if (queryClean.includes(key)) {
       const correctName = MANUAL_MAP[key];
@@ -307,39 +308,39 @@ function findProductMeta(pRaw, weight) {
       log(`  [DEBUG] ВНИМАНИЕ: Словарь понял, что это '${correctName}', но не нашел точно такого названия в МС!`);
     }
   }
- 
+
   const queryWords = query.split(/[^а-яa-z0-9]/).filter(w => w.length >= 3);
- 
+
   for (const fullName in PRODUCTS_CACHE) {
     const data = PRODUCTS_CACHE[fullName];
     const nameLower = fullName.toLowerCase();
     const matches = queryWords.filter(w => nameLower.includes(w)).length;
     const isHamon = query.includes('хамон');
     const threshold = isHamon ? 1.0 : 0.67;
- 
+
     if (queryWords.length > 0 && (matches / queryWords.length >= threshold)) {
       if (weight && weight >= 0.4 && weight <= 0.6 && nameLower.includes('250') && !nameLower.includes('500')) continue;
       if (weight && weight >= 0.2 && weight <= 0.3 && nameLower.includes('500') && !nameLower.includes('250')) continue;
       if (query.includes('родригес') && !nameLower.includes('родригес')) continue;
- 
+
       return { name: fullName, meta: data.meta, price: data.price, buy_price: data.buy_price };
     }
   }
- 
+
   return null;
 }
- 
+
 /* ===================== СКИДКИ ===================== */
- 
+
 function detectDiscountPercent(blockText) {
   const textLower = blockText.toLowerCase();
- 
+
   let m = textLower.match(/(\d{1,2})\s*%\s*ск/);
   if (m) return parseInt(m[1], 10);
- 
+
   m = textLower.match(/-\s*(\d{1,2})\s*%/);
   if (m) return parseInt(m[1], 10);
- 
+
   m = textLower.match(/\b\d{3,6}\s*\*\s*0[.,](\d{1,2})\b/);
   if (m) {
     const fracValue = parseFloat('0.' + m[1]);
@@ -347,11 +348,11 @@ function detectDiscountPercent(blockText) {
   }
   return null;
 }
- 
+
 function isDiscountExcluded(item) {
   const nameLower = (item._name || '').toLowerCase();
   if (DISCOUNT_EXCLUDE_KEYWORDS.some(kw => nameLower.includes(kw))) return true;
- 
+
   const catalogPrice = item._catalog_price;
   if (catalogPrice) {
     const tolerance = Math.max(100, catalogPrice * 0.01);
@@ -359,12 +360,12 @@ function isDiscountExcluded(item) {
   }
   return false;
 }
- 
+
 /* ===================== ЦЕНА ИЗ ТЕКСТА ОТЧЁТА ===================== */
- 
+
 function extractTextPrice(content) {
   let priceRub = null;
- 
+
   let m = content.match(/\*\s*(\d+(?:[.,]\d+)?)\s*(?:₽|[Рр])\s*\/\s*100\s*г/);
   if (m) {
     priceRub = parseFloat(m[1].replace(',', '.')) * 10;
@@ -382,11 +383,11 @@ function extractTextPrice(content) {
       }
     }
   }
- 
+
   if (priceRub === null) return null;
   return pyRound(priceRub * 100);
 }
- 
+
 function reportPriceMismatch(productName, textPriceKop, catalogPriceKop) {
   const tolerance = Math.max(100, catalogPriceKop * 0.01);
   if (Math.abs(textPriceKop - catalogPriceKop) > tolerance) {
@@ -397,9 +398,9 @@ function reportPriceMismatch(productName, textPriceKop, catalogPriceKop) {
         `проверьте, не ошибся ли менеджер или не занизил цену.`);
   }
 }
- 
+
 /* ===================== ТЕЛЕФОН / КОНТРАГЕНТ ===================== */
- 
+
 function findPhone(text) {
   const match = text.match(/(?:\+7|8)(?:[\s\-\(\)‑–—]*\d){10}/);
   if (match) {
@@ -409,10 +410,10 @@ function findPhone(text) {
   }
   return '';
 }
- 
+
 async function getOrCreateCounterparty(name, phone) {
   const cleanPhone = phone ? phone.replace(/\D/g, '') : '';
- 
+
   if (cleanPhone && cleanPhone.length >= 10) {
     const searchPhone = cleanPhone.slice(-10);
     const resp = await fetch(apiUrl('/entity/counterparty?search=' + encodeURIComponent(searchPhone)), { headers: msHeaders() });
@@ -425,7 +426,7 @@ async function getOrCreateCounterparty(name, phone) {
       }
     }
   }
- 
+
   let resp = await fetch(apiUrl('/entity/counterparty?search=' + encodeURIComponent(name)), { headers: msHeaders() });
   if (resp.ok) {
     const data = await resp.json();
@@ -436,10 +437,10 @@ async function getOrCreateCounterparty(name, phone) {
       }
     }
   }
- 
+
   const newCp = { name: name };
   if (phone) newCp.phone = phone;
- 
+
   resp = await fetch(apiUrl('/entity/counterparty'), { method: 'POST', headers: msHeaders(), body: JSON.stringify(newCp) });
   if (resp.status === 200 || resp.status === 201) {
     const data = await resp.json();
@@ -450,58 +451,78 @@ async function getOrCreateCounterparty(name, phone) {
     return null;
   }
 }
- 
+
 /* ===================== ЗАЩИТА ОТ ПОВТОРНОГО ЗАПУСКА ===================== */
- 
+
+// Текст описания попадает в МойСклад через copy/paste из мессенджера на
+// телефоне — по пути его может незаметно "подправить" автокоррекция iOS,
+// пересылка сообщения в мессенджере и т.п.: неразрывные пробелы вместо
+// обычных, "умные" тире/кавычки вместо обычных, лишние/задвоенные пробелы,
+// разное количество пустых строк. Побайтовое сравнение через .trim() на
+// это ловится и считает одно и то же описание "разным", из-за чего часть
+// заказов в отчёте детектится как дубль, а часть (те, где текст чуть-чуть
+// разъехался) — нет, и заказ создаётся заново. Поэтому сравниваем описания
+// в максимально нормализованной форме.
+function normalizeDescForCompare(s) {
+  return (s || '')
+    .replace(/ /g, ' ')                 // неразрывный пробел -> обычный
+    .replace(/[‐-―−]/g, '-')  // разные виды тире/минуса -> дефис
+    .replace(/[‘’‛]/g, "'")   // "умные" одинарные кавычки -> '
+    .replace(/[“”„]/g, '"')   // "умные" двойные кавычки -> "
+    .replace(/\s+/g, ' ')                    // любые пробелы/переносы строк -> один пробел
+    .trim()
+    .toLowerCase();
+}
+
 async function demandAlreadyExists(cId, dateStr, descText) {
   const params = `moment>=${dateStr} 00:00:00;moment<=${dateStr} 23:59:59`;
-  const resp = await fetch(apiUrl('/entity/demand?filter=' + encodeURIComponent(params) + '&limit=100'), { headers: msHeaders() });
+  const resp = await fetch(apiUrl('/entity/demand?filter=' + encodeURIComponent(params) + '&limit=1000'), { headers: msHeaders() });
   if (!resp.ok) {
     log(`  [ПРЕДУПРЕЖДЕНИЕ] Не удалось проверить дубликаты отгрузок (код ${resp.status}). Продолжаю без проверки.`);
     return false;
   }
   const data = await resp.json();
-  const descNorm = descText.trim();
+  const descNorm = normalizeDescForCompare(descText);
   for (const row of (data.rows || [])) {
     const agentHref = (row.agent && row.agent.meta && row.agent.meta.href) || '';
-    if (agentHref.endsWith('/counterparty/' + cId) && (row.description || '').trim() === descNorm) return true;
+    if (agentHref.endsWith('/counterparty/' + cId) && normalizeDescForCompare(row.description) === descNorm) return true;
   }
   return false;
 }
- 
+
 async function lossAlreadyExists(dateStr, descTextFull) {
   const params = `moment>=${dateStr} 00:00:00;moment<=${dateStr} 23:59:59`;
-  const resp = await fetch(apiUrl('/entity/loss?filter=' + encodeURIComponent(params) + '&limit=100'), { headers: msHeaders() });
+  const resp = await fetch(apiUrl('/entity/loss?filter=' + encodeURIComponent(params) + '&limit=1000'), { headers: msHeaders() });
   if (!resp.ok) {
     log(`  [ПРЕДУПРЕЖДЕНИЕ] Не удалось проверить дубликаты списаний (код ${resp.status}). Продолжаю без проверки.`);
     return false;
   }
   const data = await resp.json();
-  const descNorm = descTextFull.trim();
+  const descNorm = normalizeDescForCompare(descTextFull);
   for (const row of (data.rows || [])) {
-    if ((row.description || '').trim() === descNorm) return true;
+    if (normalizeDescForCompare(row.description) === descNorm) return true;
   }
   return false;
 }
- 
+
 async function paymentAlreadyExists(cId, dateStr, descText) {
   const params = `moment>=${dateStr} 00:00:00;moment<=${dateStr} 23:59:59`;
-  const resp = await fetch(apiUrl('/entity/paymentin?filter=' + encodeURIComponent(params) + '&limit=100'), { headers: msHeaders() });
+  const resp = await fetch(apiUrl('/entity/paymentin?filter=' + encodeURIComponent(params) + '&limit=1000'), { headers: msHeaders() });
   if (!resp.ok) {
     log(`  [ПРЕДУПРЕЖДЕНИЕ] Не удалось проверить дубликаты платежей (код ${resp.status}). Продолжаю без проверки.`);
     return false;
   }
   const data = await resp.json();
-  const descNorm = descText.trim();
+  const descNorm = normalizeDescForCompare(descText);
   for (const row of (data.rows || [])) {
     const agentHref = (row.agent && row.agent.meta && row.agent.meta.href) || '';
-    if (agentHref.endsWith('/counterparty/' + cId) && (row.description || '').trim() === descNorm) return true;
+    if (agentHref.endsWith('/counterparty/' + cId) && normalizeDescForCompare(row.description) === descNorm) return true;
   }
   return false;
 }
- 
+
 /* ===================== ИТОГО ИЗ ТЕКСТА ЗАКАЗА ===================== */
- 
+
 function extractReportTotalKopecks(blockText) {
   // Приоритет: строка "Суммарный итог" — она встречается, когда один клиент
   // фактически сделал НЕСКОЛЬКО под-заказов под одним заголовком (каждый со своим
@@ -523,27 +544,27 @@ function extractReportTotalKopecks(blockText) {
   const nums = tail.match(/\d+(?:[.,]\d+)?/g);
   if (!nums || !nums.length) return null;
   const itogoRub = parseFloat(nums[nums.length - 1].replace(',', '.'));
- 
+
   let deliveryRub = 0.0;
   // ВАЖНО: \w в JS матчит только [A-Za-z0-9_] (в отличие от Python, где \w матчит
   // и кириллицу). Поэтому здесь нужен явный класс кириллических букв, иначе
   // "доставка"/"доставки" не находится и доставка не вычитается из "Итого".
   const dm = blockText.match(/доставк[а-яё]*\s*:?\s*(\d+(?:[.,]\d+)?)/i);
   if (dm) deliveryRub = parseFloat(dm[1].replace(',', '.'));
- 
+
   let junkRub = 0.0;
   const junkRegex = /(?:аккумулятор|термопакет)[^\n=]*=\s*(\d+(?:[.,]\d+)?)/gi;
   let jm;
   while ((jm = junkRegex.exec(blockText)) !== null) {
     junkRub += parseFloat(jm[1].replace(',', '.'));
   }
- 
+
   const goodsRub = itogoRub - deliveryRub - junkRub;
   return pyRound(goodsRub * 100);
 }
- 
+
 /* ===================== СОЗДАНИЕ ДОКУМЕНТОВ ===================== */
- 
+
 function stripInternalFields(items) {
   return items.map(it => {
     const out = {};
@@ -551,7 +572,7 @@ function stripInternalFields(items) {
     return out;
   });
 }
- 
+
 async function createDemand(cId, items, dateStr, descText) {
   const payload = {
     organization: { meta: { href: `${MS_BASE}/entity/organization/${CONFIG.orgId}`, type: 'organization' } },
@@ -566,7 +587,7 @@ async function createDemand(cId, items, dateStr, descText) {
   log(`  !!! ОШИБКА МС (Код ${resp.status}): ${await resp.text()}`);
   return null;
 }
- 
+
 async function createPaymentIn(cId, demandMeta, amountKopecks, dateStr, descText) {
   const payload = {
     organization: { meta: { href: `${MS_BASE}/entity/organization/${CONFIG.orgId}`, type: 'organization' } },
@@ -581,7 +602,7 @@ async function createPaymentIn(cId, demandMeta, amountKopecks, dateStr, descText
   log(`  !!! ОШИБКА СОЗДАНИЯ ПЛАТЕЖА (Код ${resp.status}): ${await resp.text()}`);
   return false;
 }
- 
+
 async function createLoss(items, dateStr, descText) {
   const payload = {
     organization: { meta: { href: `${MS_BASE}/entity/organization/${CONFIG.orgId}`, type: 'organization' } },
@@ -595,9 +616,9 @@ async function createLoss(items, dateStr, descText) {
   log(`  !!! ОШИБКА СОЗДАНИЯ СПИСАНИЯ (Код ${resp.status}): ${await resp.text()}`);
   return false;
 }
- 
+
 /* ===================== АВТО-ИСПРАВЛЕНИЕ "СЛИПШИХСЯ" СТРОК ===================== */
- 
+
 function unglueFusedItemMarkers(text) {
   // Менеджер иногда забывает нажать Enter перед новой позицией, и маркер вида "1) "
   // слипается с концом предыдущей строки — чаще всего с номером телефона, например:
@@ -616,9 +637,9 @@ function unglueFusedItemMarkers(text) {
   //    точки идут цифры, а не название товара.
   return text.replace(/(?<![\n\d])(\d+[)\.]\s*(?=[А-ЯЁа-яёA-Za-z]))/g, '\n$1');
 }
- 
+
 /* ===================== ГЛАВНАЯ ОБРАБОТКА ОТЧЁТА ===================== */
- 
+
 async function processReport(reportTextRaw) {
   const reportText = unglueFusedItemMarkers(reportTextRaw);
   const dateMatch = reportText.match(/(\d{1,2})\.(\d{2})/);
@@ -631,7 +652,7 @@ async function processReport(reportTextRaw) {
   } else {
     reportDate = new Date().toISOString().slice(0, 10);
   }
- 
+
   const ordersRaw = reportText.split(/(?:\n|^)\s*(\d+\.\s*(?:НЕ\s*)?О[Р]?ПЛАЧЕН[^\n]*|0\.\d+\s+|\d+\.\s*(?=[Гг]риша))/);
   const orders = [];
   for (let i = 1; i < ordersRaw.length; i += 2) {
@@ -639,13 +660,13 @@ async function processReport(reportTextRaw) {
     const body = (ordersRaw[i + 1] || '').trim();
     orders.push([header, body]);
   }
- 
+
   log(`Дата отгрузок: ${reportDate}. Найдено заказов: ${orders.length}`);
- 
+
   for (const [header, block] of orders) {
     const lines = block.trim().split('\n').map(l => l.trim()).filter(l => l);
     if (!lines.length) continue;
- 
+
     let name;
     if (/^\d+[)\.]\s+/.test(lines[0]) ||
         (/\d+\s*(?:₽|руб)/.test(lines[0]) && !['итого', 'доставка'].some(x => lines[0].toLowerCase().includes(x)))) {
@@ -653,22 +674,22 @@ async function processReport(reportTextRaw) {
     } else {
       name = lines[0];
     }
- 
+
     let itemsSell = [];
     let itemsLoss = [];
     let lastItem = null;
- 
+
     for (const line of lines) {
       const lineLower = line.toLowerCase();
       const isItem = /^\d+[)\.]\s+/.test(line) || (
         /(\d+\s*(?:₽|руб)|\s+[-–—]\s*\d+\s*$|🎁|подарок|презент|\s+[-–—=]\s*0\s*(?:₽|руб)?\s*$)/.test(line) &&
         !['итого', 'доставк', 'скидка', 'выручка', 'оплат'].some(x => lineLower.includes(x))
       );
- 
+
       if (!isItem) continue;
- 
+
       let content = line.replace(/^\d+[)\.]\s*/, '').trim();
- 
+
       const bracketMatch = content.match(/\(([ \d.+]+)\)/);
       let weight;
       if (bracketMatch && /\d+\.\d+/.test(bracketMatch[1])) {
@@ -683,10 +704,16 @@ async function processReport(reportTextRaw) {
           weight = mPieces ? parseFloat(mPieces[1]) : 1.0;
         }
       }
- 
-      const splitRegex = /[-–—]\s*\d|\(\s*\d+\.\d+|\s\d+\s*\*\s*\d+(?:₽|руб)?|\s\d+\s*(?:₽|руб)/;
+
+      // ВАЖНО: у первой альтернативы (дефис перед ценой, "Товар - 1200 ₽") ДОЛЖЕН быть
+      // пробел перед дефисом (\s[-–—], а не просто [-–—]). Иначе диапазоны веса без
+      // пробелов внутри самого названия — например "Sanchez Montero 8-9кг" — ошибочно
+      // рвутся посередине (в "...Montero 8"), теряя "-9кг", и потом нечёткий поиск
+      // товара промахивается мимо правильной карточки. Настоящий разделитель цены в
+      // отчётах всегда пишется как "название ПРОБЕЛ-цена", поэтому это безопасно.
+      const splitRegex = /\s[-–—]\s*\d|\(\s*\d+\.\d+|\s\d+\s*\*\s*\d+(?:₽|руб)?|\s\d+\s*(?:₽|руб)/;
       let pRaw = content.split(splitRegex)[0].trim();
- 
+
       const pRawLetters = pRaw.replace(/[^а-яА-Яa-zA-Z]/g, '');
       if (!pRawLetters && content.includes('*') && lastItem !== null) {
         const oldQty = lastItem.quantity;
@@ -702,25 +729,25 @@ async function processReport(reportTextRaw) {
         log(`  [ДОПИСАНО КОЛ-ВО] Строка '${line}' — это продолжение предыдущей позиции. Кол-во исправлено: ${oldQty} -> ${weight}${priceNote}`);
         continue;
       }
- 
+
       if (['аккумулятор', 'термопакет', 'доставк', 'комиссия', 'купон', 'отправка', 'пакет'].some(x => lineLower.includes(x))) continue;
- 
+
       const justLetters = lineLower.replace(/[^а-яa-z]/g, '');
       if (['сырныйпрезент', 'подарок', 'подароккзаказу'].includes(justLetters)) continue;
- 
+
       const isGift = /🎁|подарок|презент/.test(lineLower) || /[-–—=]\s*0\s*(?:₽|руб)?\s*$/.test(lineLower);
- 
+
       pRaw = pRaw.replace(/(подарок к заказу|подарок|сырный презент|🎁|\(?не режем\)?)/gi, '').trim();
       pRaw = pRaw.replace(/[-–—]\s*$/, '').trim();
- 
+
       if (!pRaw) continue;
- 
+
       const productData = findProductMeta(pRaw, weight);
       if (!productData) {
         log(`  [!!!] ВНИМАНИЕ: Товар '${pRaw}' не найден!`);
         continue;
       }
- 
+
       if (isGift) {
         log(`  [🎁 ПОДАРОК] Товар '${pRaw}' (Кол-во: ${weight}) -> В СПИСАНИЕ`);
         const newItem = { quantity: weight, assortment: { meta: productData.meta }, price: productData.buy_price, _name: productData.name };
@@ -739,13 +766,13 @@ async function processReport(reportTextRaw) {
         lastItem = newItem;
       }
     }
- 
+
     // --- УМНОЕ СПАСЕНИЕ ---
     if (!itemsSell.length && !itemsLoss.length) {
       for (const line of lines.slice(1)) {
         const lineLower = line.toLowerCase();
         if (['итого', 'доставка', 'скидка', 'выручка', 'свз', 'сдэк', 'оплат'].some(x => lineLower.includes(x))) continue;
- 
+
         const productData = findProductMeta(line, 1.0);
         if (productData) {
           let fallbackPrice = productData.price;
@@ -759,7 +786,7 @@ async function processReport(reportTextRaw) {
         }
       }
     }
- 
+
     // --- АВТОСКИДКА ---
     if (itemsSell.length) {
       const discountPercent = detectDiscountPercent(block);
@@ -778,7 +805,7 @@ async function processReport(reportTextRaw) {
         if (excluded.length) log(`  [СКИДКА ${discountPercent}%] НЕ применена (в списке исключений) к: ${excluded.join(', ')}`);
       }
     }
- 
+
     // --- ОТГРУЗКА ---
     if (!itemsSell.length) {
       log(`  [ПРОПУСК] В заказе [${header}] (${name}) не найдено товаров. Отгрузка не создана.`);
@@ -794,7 +821,7 @@ async function processReport(reportTextRaw) {
           const demandResult = await createDemand(cId, itemsSell, reportDate, fullDesc);
           if (demandResult) {
             log(`  => Отгрузка [${header}] (${name}) успешно создана!`);
- 
+
             const calculatedKop = itemsSell.reduce((s, it) => s + it.quantity * it.price * (1 - (it.discount || 0) / 100), 0);
             const reportKop = extractReportTotalKopecks(block);
             if (reportKop === null) {
@@ -807,14 +834,14 @@ async function processReport(reportTextRaw) {
               const toleranceKop = Math.max(5000, calculatedKop * 0.001);
               const diffKop = calculatedKop - reportKop;
               const hasMismatch = Math.abs(diffKop) > 1; // >1 копейки — чтобы не шуметь на копеечные ошибки округления float
- 
+
               if (hasMismatch) {
                 const sign = diffKop >= 0 ? '+' : '';
                 log(`  [❗НЕСОСТЫКОВКА] Сумма по позициям (${(calculatedKop / 100).toFixed(2)} ₽) не совпадает с 'Итого' в отчёте ` +
                     `за вычетом доставки/мусора (${(reportKop / 100).toFixed(2)} ₽, разница ${sign}${(diffKop / 100).toFixed(2)} ₽). ` +
                     `Заказ [${header}] (${name}) — проверьте, пожалуйста.`);
               }
- 
+
               if (Math.abs(diffKop) <= toleranceKop) {
                 const paymentDesc = fullDesc;
                 const paymentSum = demandResult.sum !== undefined ? demandResult.sum : pyRound(calculatedKop);
@@ -836,7 +863,7 @@ async function processReport(reportTextRaw) {
         }
       }
     }
- 
+
     // --- СПИСАНИЕ ПОДАРКОВ ---
     if (itemsLoss.length) {
       const fullDesc = `${header}\n${block.trim()}`;
@@ -850,22 +877,22 @@ async function processReport(reportTextRaw) {
       }
     }
   }
- 
+
   log('Готово.');
 }
- 
+
 /* ===================== UI ===================== */
- 
+
 const statusEl = document.getElementById('status');
 const processBtn = document.getElementById('processBtn');
 const settingsStatusEl = document.getElementById('settingsStatus');
- 
+
 document.getElementById('saveSettingsBtn').addEventListener('click', () => {
   saveConfig();
   settingsStatusEl.textContent = '✓ Сохранено на этом устройстве.';
   setTimeout(() => { settingsStatusEl.textContent = ''; }, 3000);
 });
- 
+
 document.getElementById('testConnBtn').addEventListener('click', async () => {
   saveConfig();
   if (!CONFIG.workerUrl || !CONFIG.token) {
@@ -887,9 +914,9 @@ document.getElementById('testConnBtn').addEventListener('click', async () => {
     settingsStatusEl.textContent = `✗ Не удалось достучаться до прокси: ${err.message}`;
   }
 });
- 
+
 document.getElementById('clearLogBtn').addEventListener('click', clearLog);
- 
+
 document.getElementById('copyLogBtn').addEventListener('click', async () => {
   const text = Array.from(logEl.children).map(el => el.textContent).join('\n') || logEl.textContent;
   try {
@@ -899,7 +926,7 @@ document.getElementById('copyLogBtn').addEventListener('click', async () => {
     statusEl.textContent = 'Не удалось скопировать автоматически — выдели текст вручную.';
   }
 });
- 
+
 processBtn.addEventListener('click', async () => {
   loadConfig();
   if (!configComplete()) {
@@ -912,12 +939,12 @@ processBtn.addEventListener('click', async () => {
     statusEl.textContent = '✗ Вставь текст отчёта.';
     return;
   }
- 
+
   clearLog();
   processBtn.disabled = true;
   processBtn.textContent = 'Обрабатываю...';
   statusEl.textContent = '';
- 
+
   try {
     await loadProducts();
     await processReport(reportText);
@@ -930,7 +957,7 @@ processBtn.addEventListener('click', async () => {
     processBtn.textContent = 'Провести ▶';
   }
 });
- 
+
 loadConfig();
 </script>
 </body>
