@@ -87,6 +87,10 @@
   <div class="card">
     <h2>Текст отчёта</h2>
     <textarea id="reportText" placeholder="Вставь сюда текст отчёта за день..."></textarea>
+    <label class="hint" style="display:flex; align-items:center; gap:8px; margin:8px 0;">
+      <input type="checkbox" id="dryRunCheckbox" style="width:auto; margin:0;">
+      🧪 Тестовый прогон — показать журнал, но ничего не создавать в МоемСкладе
+    </label>
     <button id="processBtn">Провести ▶</button>
     <p id="status"></p>
   </div>
@@ -108,6 +112,15 @@
 const MS_BASE = "https://api.moysklad.ru/api/remap/1.2"; // реальный адрес МоегоСклада — только для meta.href внутри документов
 
 const CONFIG = { workerUrl: '', token: '', orgId: '', storeId: '' };
+
+// Тестовый прогон: все ЧТЕНИЯ (каталог, поиск контрагента, проверка дублей) идут по-настоящему
+// в МойСклад — это и делает предпросмотр реалистичным, — а вот все ЗАПИСИ (создание отгрузки/
+// платежа/списания/нового контрагента) подменяются на симуляцию. См. createDemand,
+// createPaymentIn, createLoss и хвост getOrCreateCounterparty.
+let DRY_RUN = false;
+function drSuffix() {
+  return DRY_RUN ? ' [🧪 СИМУЛЯЦИЯ — НЕ записано в МойСклад]' : '';
+}
 
 function loadConfig() {
   CONFIG.workerUrl = localStorage.getItem('ms_worker_url') || '';
@@ -498,6 +511,11 @@ async function getOrCreateCounterparty(name, phone) {
     }
   }
 
+  if (DRY_RUN) {
+    log(`  [Контрагент] СОЗДАН НОВЫЙ${drSuffix()}: ${name} (Телефон: ${phone})`);
+    return 'dryrun-cp-' + Math.random().toString(36).slice(2, 10);
+  }
+
   const newCp = { name: name };
   if (phone) newCp.phone = phone;
 
@@ -671,6 +689,10 @@ function stripInternalFields(items) {
 }
 
 async function createDemand(cId, items, dateStr, descText) {
+  if (DRY_RUN) {
+    const sum = pyRound(items.reduce((s, it) => s + it.quantity * it.price * (1 - (it.discount || 0) / 100), 0));
+    return { meta: { href: 'dryrun-demand-' + Math.random().toString(36).slice(2, 10) }, sum };
+  }
   const payload = {
     organization: { meta: { href: `${MS_BASE}/entity/organization/${CONFIG.orgId}`, type: 'organization' } },
     agent: { meta: { href: `${MS_BASE}/entity/counterparty/${cId}`, type: 'counterparty' } },
@@ -686,6 +708,7 @@ async function createDemand(cId, items, dateStr, descText) {
 }
 
 async function createPaymentIn(cId, demandMeta, amountKopecks, dateStr, descText) {
+  if (DRY_RUN) return true;
   const payload = {
     organization: { meta: { href: `${MS_BASE}/entity/organization/${CONFIG.orgId}`, type: 'organization' } },
     agent: { meta: { href: `${MS_BASE}/entity/counterparty/${cId}`, type: 'counterparty' } },
@@ -701,6 +724,7 @@ async function createPaymentIn(cId, demandMeta, amountKopecks, dateStr, descText
 }
 
 async function createLoss(items, dateStr, descText) {
+  if (DRY_RUN) return true;
   const payload = {
     organization: { meta: { href: `${MS_BASE}/entity/organization/${CONFIG.orgId}`, type: 'organization' } },
     store: { meta: { href: `${MS_BASE}/entity/store/${CONFIG.storeId}`, type: 'store' } },
@@ -795,7 +819,7 @@ async function processMarketplaceOrder(header, block, lines, reportDate) {
     log(`  [ОШИБКА API] МойСклад не смог создать отгрузку ОЗОН для [${header}].`);
     return;
   }
-  log(`  => Отгрузка ОЗОН [${header}] (${cpRaw}) успешно создана!`);
+  log(`  => Отгрузка ОЗОН [${header}] (${cpRaw}) успешно создана!${drSuffix()}`);
 
   // Цену/сумму из отчёта не сверяем (маркетплейс сам решает розничную цену) — платёж
   // проводим ровно на сумму из отчёта, если она нашлась, иначе на сумму позиции.
@@ -806,7 +830,7 @@ async function processMarketplaceOrder(header, block, lines, reportDate) {
     return;
   }
   if (await createPaymentIn(cId, demandResult.meta, paymentSum, reportDate, fullDesc)) {
-    log(`  => 💰 Входящий платёж ОЗОН на ${(paymentSum / 100).toFixed(2)} ₽ для [${header}] создан.`);
+    log(`  => 💰 Входящий платёж ОЗОН на ${(paymentSum / 100).toFixed(2)} ₽ для [${header}] создан.${drSuffix()}`);
   } else {
     log(`  [ОШИБКА API] МойСклад не смог создать платёж ОЗОН для [${header}].`);
   }
@@ -1047,7 +1071,7 @@ async function processReport(reportTextRaw) {
         } else {
           const demandResult = await createDemand(cId, itemsSell, reportDate, fullDesc);
           if (demandResult) {
-            log(`  => Отгрузка [${header}] (${name}) успешно создана!`);
+            log(`  => Отгрузка [${header}] (${name}) успешно создана!${drSuffix()}`);
 
             const calculatedKop = itemsSell.reduce((s, it) => s + it.quantity * it.price * (1 - (it.discount || 0) / 100), 0);
             const reportKop = extractReportTotalKopecks(block);
@@ -1076,7 +1100,7 @@ async function processReport(reportTextRaw) {
                   log(`  [ПРОПУСК] Входящий платёж для [${header}] (${name}) уже есть в МоемСкладе — дубль не создаю.`);
                 } else if (await createPaymentIn(cId, demandResult.meta, paymentSum, reportDate, paymentDesc)) {
                   log(`  => 💰 Входящий платёж на ${(paymentSum / 100).toFixed(2)} ₽ для [${header}] (${name}) создан` +
-                      `${hasMismatch ? ' (в пределах допустимой погрешности — см. уведомление выше)' : ' (сумма позиций совпала с отчётом)'}.`);
+                      `${hasMismatch ? ' (в пределах допустимой погрешности — см. уведомление выше)' : ' (сумма позиций совпала с отчётом)'}.${drSuffix()}`);
                 } else {
                   log(`  [ОШИБКА API] МойСклад не смог создать платёж для '${name}'.`);
                 }
@@ -1098,7 +1122,7 @@ async function processReport(reportTextRaw) {
       if (await lossAlreadyExists(reportDate, fullLossDesc)) {
         log(`  [ПРОПУСК] Списание подарков для [${header}] (${name}) уже есть в МоемСкладе — дубль не создаю.`);
       } else if (await createLoss(itemsLoss, reportDate, fullDesc)) {
-        log(`  => 🎁 Списание подарков для [${header}] (${name}) успешно создано!`);
+        log(`  => 🎁 Списание подарков для [${header}] (${name}) успешно создано!${drSuffix()}`);
       } else {
         log(`  [ОШИБКА API] МойСклад не смог создать списание подарков для '${name}'.`);
       }
@@ -1167,19 +1191,32 @@ processBtn.addEventListener('click', async () => {
     return;
   }
 
+  DRY_RUN = document.getElementById('dryRunCheckbox').checked;
+
   clearLog();
   processBtn.disabled = true;
-  processBtn.textContent = 'Обрабатываю...';
+  processBtn.textContent = DRY_RUN ? 'Проверяю (тест)...' : 'Обрабатываю...';
   statusEl.textContent = '';
+
+  if (DRY_RUN) {
+    log('🧪🧪🧪 ТЕСТОВЫЙ ПРОГОН — отгрузки/платежи/списания/контрагенты НЕ создаются в МоемСкладе.');
+    log('Каталог, поиск контрагентов и проверка дублей — настоящие (читаются из МоегоСклада), поэтому журнал ниже покажет реальную картину: что было бы найдено, что — создано, что — пропущено как дубль.');
+  }
 
   try {
     await loadProducts();
     await processReport(reportText);
-    statusEl.textContent = '✓ Обработка завершена. Проверь журнал ниже.';
+    if (DRY_RUN) {
+      log('🧪🧪🧪 КОНЕЦ ТЕСТОВОГО ПРОГОНА — ничего не записано в МойСклад. Снимите галочку и нажмите «Провести», когда будете готовы провести по-настоящему.');
+      statusEl.textContent = '✓ Тестовый прогон завершён (ничего не создано). Проверь журнал ниже.';
+    } else {
+      statusEl.textContent = '✓ Обработка завершена. Проверь журнал ниже.';
+    }
   } catch (err) {
     log('  [!!!] КРИТИЧЕСКАЯ ОШИБКА: ' + (err && err.message ? err.message : String(err)));
     statusEl.textContent = '✗ Обработка прервана из-за ошибки — см. журнал.';
   } finally {
+    DRY_RUN = false;
     processBtn.disabled = false;
     processBtn.textContent = 'Провести ▶';
   }
