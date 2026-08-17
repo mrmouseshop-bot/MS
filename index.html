@@ -201,6 +201,7 @@ function pyRound(x, ndigits) {
 /* ===================== КЭШ ТОВАРОВ ===================== */
 
 let PRODUCTS_CACHE = {};
+let ARTICLE_CACHE = {}; // товары по артикулу (для маркетплейс-заказов вроде ОЗОН, где ищем не по названию)
 
 const DISCOUNT_EXCLUDE_KEYWORDS = []; // ручной список сверх основного правила (по умолчанию пуст)
 
@@ -213,17 +214,31 @@ async function loadProducts() {
   }
   const data = await resp.json();
   PRODUCTS_CACHE = {};
+  ARTICLE_CACHE = {};
   for (const item of (data.rows || [])) {
     const fullName = (item.name || '').trim();
     const salePrices = item.salePrices || [];
     const price = salePrices.length ? salePrices[0].value : 0;
     const buyPrice = (item.buyPrice && item.buyPrice.value) || 0;
     PRODUCTS_CACHE[fullName] = { meta: item.meta, price: price, buy_price: buyPrice };
+    const article = (item.article || '').trim();
+    if (article) {
+      ARTICLE_CACHE[article.toLowerCase()] = { meta: item.meta, price: price, buy_price: buyPrice, name: fullName };
+    }
   }
   log(`Загружено ${Object.keys(PRODUCTS_CACHE).length} товаров.`);
   for (const n in PRODUCTS_CACHE) {
     if (n.toLowerCase().includes('хамон')) log(`Найден в базе: '${n}'`);
   }
+}
+
+// Поиск товара по артикулу (точное совпадение, без учёта регистра) — используется для
+// заказов с маркетплейсов (ОЗОН и т.п.), где в отчёте указан не человекочитаемое название
+// товара, а внутренний артикул/SKU.
+function findProductByArticle(article) {
+  const key = (article || '').trim().toLowerCase();
+  if (!key) return null;
+  return ARTICLE_CACHE[key] || null;
 }
 
 /* ===================== ПОИСК ТОВАРА ПО НАЗВАНИЮ ИЗ ОТЧЁТА ===================== */
@@ -241,7 +256,6 @@ const MANUAL_MAP = {
   'бри ile de france': 'Бри ILe de France 125гр',
   'манчего mini трюфель': 'Манчего mini Трюфель 190гр',
   'оливки фаршированные кешью': 'Оливки фаршированные кешью в рассоле DELPHI 350гр',
-  'манчего dop (18 мес)': 'Манчего DOP (18 мес) 200гр',
   'пармезан 70mesi cantarelli': 'Пармезан 70mesi Cantarelli (limited edition) ~300гр',
   'манчего с белым трюфелем': 'Манчего с белым трюфелем',
   'пармезан ferrarini vacche jersey': 'Ferrarini_VACCHE_JERSEY_300g Пармезан Феррарини 300 гр',
@@ -322,6 +336,13 @@ function findProductMeta(pRaw, weight) {
       if (weight && weight >= 0.4 && weight <= 0.6 && nameLower.includes('250') && !nameLower.includes('500')) continue;
       if (weight && weight >= 0.2 && weight <= 0.3 && nameLower.includes('500') && !nameLower.includes('250')) continue;
       if (query.includes('родригес') && !nameLower.includes('родригес')) continue;
+      // "Манчего DOP (18 мес)" (ВЕСОВОЙ, 420₽/100г) и "Манчего DOP (18 мес) 200гр"
+      // (ШТУЧНАЯ фасовка, 1000₽/шт) — разные товары с почти одинаковым названием.
+      // Если в отчёте явно НЕ написано "200" (значит, это весовая продажа), не даём
+      // нечёткому поиску попасть на штучную фасовку — иначе списывался не тот SKU
+      // со склада (сумма в документ при этом всё равно бралась из отчёта, деньги
+      // не страдали, но инвентарь — да).
+      if (query.includes('манчего') && query.includes('18 мес') && !query.includes('200') && nameLower.includes('200')) continue;
 
       return { name: fullName, meta: data.meta, price: data.price, buy_price: data.buy_price };
     }
@@ -338,15 +359,39 @@ function detectDiscountPercent(blockText) {
   let m = textLower.match(/(\d{1,2})\s*%\s*ск/);
   if (m) return parseInt(m[1], 10);
 
-  m = textLower.match(/-\s*(\d{1,2})\s*%/);
+  // ВАЖНО: минус перед процентом не всегда обычный дефис "-" (U+002D) — в промокодах
+  // (например, скопированных из другого приложения) он может оказаться "математическим"
+  // знаком минус "−" (U+2212), который выглядит идентично, но не совпадает с обычным
+  // дефисом побайтово. Ловим оба варианта, иначе скидка по промокоду молча теряется.
+  m = textLower.match(/[-−]\s*(\d{1,2})\s*%/);
   if (m) return parseInt(m[1], 10);
 
-  m = textLower.match(/\b\d{3,6}\s*\*\s*0[.,](\d{1,2})\b/);
+  m = textLower.match(/\b\d{3,6}\s*[*×]\s*0[.,](\d{1,2})\b/);
   if (m) {
     const fracValue = parseFloat('0.' + m[1]);
     return Math.round((1 - fracValue) * 100);
   }
   return null;
+}
+
+// Иногда скидку пишут не процентом, а плоской суммой в рублях отдельной строкой,
+// например "-150р" (без привязки к конкретному товару — общая уступка на заказ).
+// Ловим ТОЛЬКО строку, целиком состоящую из "-<число>[р|руб|₽]" — если после числа
+// есть что-то ещё (как в "-35р это был вычет прошлой переплаты"), это уже не сюда,
+// такое не трогаем (слишком легко перепутать с чем-то другим).
+function detectFlatDiscountRub(blockText) {
+  const lines = blockText.split('\n');
+  let totalRub = 0;
+  let found = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    const m = line.match(/^-\s*(\d+(?:[.,]\d+)?)\s*(?:р\.?|руб\.?|₽)?\s*$/i);
+    if (m) {
+      totalRub += parseFloat(m[1].replace(',', '.'));
+      found = true;
+    }
+  }
+  return found ? totalRub : null;
 }
 
 function isDiscountExcluded(item) {
@@ -366,15 +411,17 @@ function isDiscountExcluded(item) {
 function extractTextPrice(content) {
   let priceRub = null;
 
-  let m = content.match(/\*\s*(\d+(?:[.,]\d+)?)\s*(?:₽|[Рр])\s*\/\s*100\s*г/);
+  // ВАЖНО: новый формат отчёта иногда пишет знак умножения как "×" (U+00D7), а не "*" —
+  // например "2 шт × 950₽ = 1900 ₽". Оба символа принимаются везде ниже.
+  let m = content.match(/[*×]\s*(\d+(?:[.,]\d+)?)\s*(?:₽|[Рр])\s*\/\s*100\s*г/);
   if (m) {
     priceRub = parseFloat(m[1].replace(',', '.')) * 10;
   } else {
-    m = content.match(/(\d+(?:[.,]\d+)?)\s*(?:₽|руб)\s*\*\s*\d+/);
+    m = content.match(/(\d+(?:[.,]\d+)?)\s*(?:₽|руб)\s*[*×]\s*\d+/);
     if (m) {
       priceRub = parseFloat(m[1].replace(',', '.'));
     } else {
-      m = content.match(/\*\s*(\d+(?:[.,]\d+)?)\s*(?:₽|руб)(?!\s*\/\s*100)/);
+      m = content.match(/[*×]\s*(\d+(?:[.,]\d+)?)\s*(?:₽|руб)(?!\s*\/\s*100)/);
       if (m) {
         priceRub = parseFloat(m[1].replace(',', '.'));
       } else {
@@ -528,9 +575,25 @@ function extractReportTotalKopecks(blockText) {
   // фактически сделал НЕСКОЛЬКО под-заказов под одним заголовком (каждый со своим
   // "Итого:"), и в конце менеджер подводит ОБЩИЙ итог. Если её нет — берём первую
   // обычную строку "Итого:" (как раньше).
-  let m = blockText.match(/суммарный\s+итог[а-яё]*\s*:?\s*(.+)/i);
+  // ВАЖНО: без проверки границы слова "итого" может случайно найтись ВНУТРИ другого
+  // слова — например, в адресе "Магнитогорская улица 3" буквы "нитог" внутри слова
+  // складываются ровно в "итого"! Тогда регэксп подхватывает мусор из адреса вместо
+  // настоящей строки "Итого:", и сверка суммы полностью ломается. \b в JS не работает
+  // с кириллицей (кириллица — не \w), поэтому границу слова проверяем вручную через
+  // negative lookbehind/lookahead на кириллические/латинские буквы.
+  const NOT_LETTER_BEFORE = '(?<![а-яёА-ЯЁa-zA-Z])';
+  const NOT_LETTER_AFTER = '(?![а-яёА-ЯЁa-zA-Z])';
+  let m = blockText.match(new RegExp(NOT_LETTER_BEFORE + 'суммарный\\s+итог[а-яё]*' + NOT_LETTER_AFTER + '\\s*:?\\s*(.+)', 'i'));
   if (!m) {
-    m = blockText.match(/итого\s*:?\s*(.+)/i);
+    m = blockText.match(new RegExp(NOT_LETTER_BEFORE + 'итого' + NOT_LETTER_AFTER + '\\s*:?\\s*(.+)', 'i'));
+  }
+  if (!m) {
+    // Новый формат отчёта у некоторых заказов вообще не пишет "Итого:" — вместо него
+    // только "Подытог:" (сумма ДО промокода/скидки) и "К оплате: N ₽" (финальная сумма
+    // после скидки — то, что реально нужно для сверки). Используем "К оплате" только как
+    // запасной вариант, когда обычного "Итого:" нет вообще, иначе рискуем перепутать с
+    // многополучательской строкой вида "К оплате: 25800 ₽ (Климу) + 800 ₽ (Насте)".
+    m = blockText.match(new RegExp(NOT_LETTER_BEFORE + 'к\\s+оплате' + NOT_LETTER_AFTER + '\\s*:?\\s*(.+)', 'i'));
   }
   if (!m) return null;
 
@@ -566,7 +629,7 @@ function extractReportTotalKopecks(blockText) {
   // пункт отправления СДЭК из Москвы - 250 (комиссия по условиям магазина)". Поэтому
   // берём ПОСЛЕДНЕЕ число во всей строке "Доставка..." (после удаления скобок), а не
   // требуем, чтобы число шло сразу после слова "доставка".
-  const dLineMatch = blockText.match(/доставк[а-яё]*[^\n]*/i);
+  const dLineMatch = blockText.match(new RegExp(NOT_LETTER_BEFORE + 'доставк[а-яё]*[^\\n]*', 'i'));
   if (dLineMatch) {
     const dLine = dLineMatch[0].replace(/\([^)]*\)/g, ' ');
     const dNums = dLine.match(/\d+(?:[.,]\d+)?/g);
@@ -659,6 +722,83 @@ function unglueFusedItemMarkers(text) {
   return text.replace(/(?<![\n\d])(\d+[)\.]\s*(?=[А-ЯЁа-яёA-Za-z]))/g, '\n$1');
 }
 
+/* ===================== ЗАКАЗЫ МАРКЕТПЛЕЙСОВ (ОЗОН И Т.П.) ===================== */
+
+// Формат (пример):
+//   1.1 ОЗОН
+//   0107892035-0132-1        <- номер заказа ОЗОН, используем как контрагента
+//   Доставляется              <- не важно
+//   2 шт, Mostarda_Fichi_120g <- количество, артикул товара в МоемСкладе
+//   1 300 ₽                   <- сумма, не сверяем с каталогом — просто проводим платёж
+async function processMarketplaceOrder(header, block, lines, reportDate) {
+  const cpRaw = lines[0] || 'OZON';
+
+  let ozonQty = null;
+  let ozonArticle = null;
+  for (const line of lines) {
+    const m = line.match(/^(\d+(?:[.,]\d+)?)\s*шт\.?\s*,\s*(.+)$/i);
+    if (m) {
+      ozonQty = parseFloat(m[1].replace(',', '.'));
+      ozonArticle = m[2].trim();
+      break;
+    }
+  }
+
+  if (!ozonArticle) {
+    log(`  [!!!] ОЗОН: в заказе [${header}] не нашлась строка "N шт, артикул" — пропускаю, проведите вручную.`);
+    return;
+  }
+
+  // Сумма может быть написана с пробелом-разделителем тысяч ("1 300 ₽") — убираем пробелы
+  // внутри числа перед разбором.
+  let ozonPriceRub = null;
+  for (const line of lines) {
+    const m = line.match(/^([\d\s]+(?:[.,]\d+)?)\s*₽\s*$/);
+    if (m) {
+      ozonPriceRub = parseFloat(m[1].replace(/\s/g, '').replace(',', '.'));
+      break;
+    }
+  }
+
+  const productData = findProductByArticle(ozonArticle);
+  if (!productData) {
+    log(`  [!!!] ВНИМАНИЕ: ОЗОН-товар с артикулом '${ozonArticle}' не найден в МоемСкладе! Заказ [${header}] — проведите вручную.`);
+    return;
+  }
+  log(`  [OZON] Артикул '${ozonArticle}' найден как '${productData.name}' (Кол-во: ${ozonQty})`);
+
+  const newItem = { quantity: ozonQty, assortment: { meta: productData.meta }, price: productData.price, _name: productData.name };
+  const fullDesc = `${header}\n${block.trim()}`;
+  const cId = await getOrCreateCounterparty(cpRaw, '');
+  if (!cId) return;
+
+  if (await demandAlreadyExists(cId, reportDate, fullDesc)) {
+    log(`  [ПРОПУСК] Отгрузка ОЗОН [${header}] уже есть в МоемСкладе — дубль не создаю.`);
+    return;
+  }
+
+  const demandResult = await createDemand(cId, [newItem], reportDate, fullDesc);
+  if (!demandResult) {
+    log(`  [ОШИБКА API] МойСклад не смог создать отгрузку ОЗОН для [${header}].`);
+    return;
+  }
+  log(`  => Отгрузка ОЗОН [${header}] (${cpRaw}) успешно создана!`);
+
+  // Цену/сумму из отчёта не сверяем (маркетплейс сам решает розничную цену) — платёж
+  // проводим ровно на сумму из отчёта, если она нашлась, иначе на сумму позиции.
+  const paymentSum = ozonPriceRub !== null ? pyRound(ozonPriceRub * 100) : (demandResult.sum !== undefined ? demandResult.sum : pyRound(newItem.quantity * newItem.price));
+
+  if (await paymentAlreadyExists(cId, reportDate, fullDesc)) {
+    log(`  [ПРОПУСК] Входящий платёж ОЗОН для [${header}] уже есть в МоемСкладе — дубль не создаю.`);
+    return;
+  }
+  if (await createPaymentIn(cId, demandResult.meta, paymentSum, reportDate, fullDesc)) {
+    log(`  => 💰 Входящий платёж ОЗОН на ${(paymentSum / 100).toFixed(2)} ₽ для [${header}] создан.`);
+  } else {
+    log(`  [ОШИБКА API] МойСклад не смог создать платёж ОЗОН для [${header}].`);
+  }
+}
+
 /* ===================== ГЛАВНАЯ ОБРАБОТКА ОТЧЁТА ===================== */
 
 async function processReport(reportTextRaw) {
@@ -674,7 +814,25 @@ async function processReport(reportTextRaw) {
     reportDate = new Date().toISOString().slice(0, 10);
   }
 
-  const ordersRaw = reportText.split(/(?:\n|^)\s*(\d+\.\s*(?:НЕ\s*)?О[Р]?ПЛАЧЕН[^\n]*|0\.\d+\s+|\d+\.\s*(?=[Гг]риша))/);
+  // В конце дня, СРАЗУ после общего "Итого: N" и "Выручка: N" (грандтотал всего дня),
+  // часто идёт справочный блок "Доставки Максим ДД.ММ - N" со СПИСКОМ заказов для курьера
+  // на сегодня — включая заказы из ПРОШЛЫХ дней. Заголовки там выглядят точно так же
+  // ("1. ОПЛАЧЕН", "2. ОПЛАЧЕН"...), поэтому без этой отсечки код принимает их за НОВЫЕ
+  // заказы и пытается обработать повторно (спасает только то, что там обычно нет товарных
+  // строк — но полагаться на удачу нельзя). Поэтому всё, что идёт после дневного
+  // "Итого:\nВыручка:", в разбор заказов не попадает.
+  const NOT_LETTER_BEFORE_TRAIL = '(?<![а-яёА-ЯЁa-zA-Z])';
+  const NOT_LETTER_AFTER_TRAIL = '(?![а-яёА-ЯЁa-zA-Z])';
+  const trailerMatch = reportText.match(new RegExp(
+    NOT_LETTER_BEFORE_TRAIL + 'итого' + NOT_LETTER_AFTER_TRAIL + '\\s*:?\\s*\\d+(?:[.,]\\d+)?\\s*\\r?\\n\\s*' +
+    NOT_LETTER_BEFORE_TRAIL + 'выручка' + NOT_LETTER_AFTER_TRAIL + '\\s*:?\\s*\\d+(?:[.,]\\d+)?',
+    'i'
+  ));
+  const ordersSectionText = trailerMatch ? reportText.slice(0, trailerMatch.index) : reportText;
+
+  // Заказы с маркетплейсов (ОЗОН и т.п.) оформлены заголовком вида "1.1 ОЗОН" —
+  // добавляем как отдельную альтернативу заголовка, наравне с "N. ОПЛАЧЕН".
+  const ordersRaw = ordersSectionText.split(/(?:\n|^)\s*(\d+\.\d+\s*ОЗОН[^\n]*|\d+\.\s*(?:НЕ\s*)?О[Р]?ПЛАЧЕН[^\n]*|0\.\d+\s+|\d+\.\s*(?=[Гг]риша))/);
   const orders = [];
   for (let i = 1; i < ordersRaw.length; i += 2) {
     const header = (ordersRaw[i] || '').trim();
@@ -687,6 +845,15 @@ async function processReport(reportTextRaw) {
   for (const [header, block] of orders) {
     const lines = block.trim().split('\n').map(l => l.trim()).filter(l => l);
     if (!lines.length) continue;
+
+    // --- ЗАКАЗЫ МАРКЕТПЛЕЙСОВ (ОЗОН и т.п.) ---
+    // Формат совсем другой: нет имени клиента (только номер заказа маркетплейса,
+    // используем его же как контрагента), товар ищем по АРТИКУЛУ (не по названию),
+    // а цену/сумму из отчёта не проверяем — просто проводим платёж на неё.
+    if (/ОЗОН/i.test(header)) {
+      await processMarketplaceOrder(header, block, lines, reportDate);
+      continue;
+    }
 
     let name;
     if (/^\d+[)\.]\s+/.test(lines[0]) ||
@@ -704,7 +871,7 @@ async function processReport(reportTextRaw) {
       const lineLower = line.toLowerCase();
       const isItem = /^\d+[)\.]\s+/.test(line) || (
         /(\d+\s*(?:₽|руб)|\s+[-–—]\s*\d+\s*$|🎁|подарок|презент|\s+[-–—=]\s*0\s*(?:₽|руб)?\s*$)/.test(line) &&
-        !['итого', 'доставк', 'скидка', 'выручка', 'оплат'].some(x => lineLower.includes(x))
+        !['итого', 'подытог', 'доставк', 'скидка', 'выручка', 'оплат'].some(x => lineLower.includes(x))
       );
 
       if (!isItem) continue;
@@ -713,15 +880,26 @@ async function processReport(reportTextRaw) {
 
       const bracketMatch = content.match(/\(([ \d.+]+)\)/);
       let weight;
+      // Новый формат иногда пишет количество штук явно словом "шт" — например
+      // "2 шт × 950₽ = 1900 ₽". Это проверяем ПЕРВЫМ (после веса-в-скобках), так как это
+      // однозначный сигнал количества, а не цены — в отличие от старого формата
+      // "<цена> * <кол-во>" (например "900₽ * 2 = 1800"), где число после "*" — это как
+      // раз количество, а не цена (разный порядок множителей).
+      // ВАЖНО: \b не работает после кириллицы (кириллица — не \w в JS), поэтому границу
+      // после "шт" проверяем вручную через negative lookahead на буквы, а не через \b.
+      const mSht = content.match(/(\d+(?:[.,]\d+)?)\s*шт(?![а-яёА-ЯЁa-zA-Z])/i);
       if (bracketMatch && /\d+\.\d+/.test(bracketMatch[1])) {
         const weights = bracketMatch[1].match(/\d+\.\d+/g) || [];
         weight = weights.length ? pyRound(weights.reduce((s, w) => s + parseFloat(w), 0), 3) : 1.0;
+      } else if (mSht) {
+        weight = parseFloat(mSht[1].replace(',', '.'));
       } else {
-        const mEq = content.match(/\*\s*(\d+(?:\.\d+)?)\s*(?:=|$)/);
+        // ВАЖНО: новый формат иногда пишет знак умножения как "×" (U+00D7), а не "*".
+        const mEq = content.match(/[*×]\s*(\d+(?:\.\d+)?)\s*(?:=|$)/);
         if (mEq) {
           weight = parseFloat(mEq[1]);
         } else {
-          const mPieces = content.match(/(\d+(?:\.\d+)?)\s*\*\s*\d+\s*(?:₽|руб)?/);
+          const mPieces = content.match(/(\d+(?:\.\d+)?)\s*[*×]\s*\d+\s*(?:₽|руб)?/);
           weight = mPieces ? parseFloat(mPieces[1]) : 1.0;
         }
       }
@@ -732,11 +910,11 @@ async function processReport(reportTextRaw) {
       // рвутся посередине (в "...Montero 8"), теряя "-9кг", и потом нечёткий поиск
       // товара промахивается мимо правильной карточки. Настоящий разделитель цены в
       // отчётах всегда пишется как "название ПРОБЕЛ-цена", поэтому это безопасно.
-      const splitRegex = /\s[-–—]\s*\d|\(\s*\d+\.\d+|\s\d+\s*\*\s*\d+(?:₽|руб)?|\s\d+\s*(?:₽|руб)/;
+      const splitRegex = /\s[-–—]\s*\d|\(\s*\d+\.\d+|\s\d+\s*[*×]\s*\d+(?:₽|руб)?|\s\d+\s*(?:₽|руб)/;
       let pRaw = content.split(splitRegex)[0].trim();
 
       const pRawLetters = pRaw.replace(/[^а-яА-Яa-zA-Z]/g, '');
-      if (!pRawLetters && content.includes('*') && lastItem !== null) {
+      if (!pRawLetters && (content.includes('*') || content.includes('×')) && lastItem !== null) {
         const oldQty = lastItem.quantity;
         lastItem.quantity = weight;
         let priceNote = '';
@@ -792,7 +970,7 @@ async function processReport(reportTextRaw) {
     if (!itemsSell.length && !itemsLoss.length) {
       for (const line of lines.slice(1)) {
         const lineLower = line.toLowerCase();
-        if (['итого', 'доставка', 'скидка', 'выручка', 'свз', 'сдэк', 'оплат'].some(x => lineLower.includes(x))) continue;
+        if (['итого', 'подытог', 'доставка', 'скидка', 'выручка', 'свз', 'сдэк', 'оплат'].some(x => lineLower.includes(x))) continue;
 
         const productData = findProductMeta(line, 1.0);
         if (productData) {
@@ -810,7 +988,22 @@ async function processReport(reportTextRaw) {
 
     // --- АВТОСКИДКА ---
     if (itemsSell.length) {
-      const discountPercent = detectDiscountPercent(block);
+      let discountPercent = detectDiscountPercent(block);
+      let discountLabel = discountPercent ? `${discountPercent}%` : null;
+      if (!discountPercent) {
+        // Нет процентной скидки — проверяем плоскую (рублями), например "-150р" отдельной
+        // строкой. Пересчитываем её в эквивалентный процент от суммы позиций ДО скидки и
+        // применяем точно так же, как обычную процентную — так реальная выручка в МоемСкладе
+        // тоже уменьшается на эту сумму, а не только сверка совпадает "на бумаге".
+        const flatDiscountRub = detectFlatDiscountRub(block);
+        if (flatDiscountRub) {
+          const rawTotalRub = itemsSell.reduce((s, it) => s + it.quantity * it.price, 0) / 100;
+          if (rawTotalRub > 0) {
+            discountPercent = Math.round((flatDiscountRub / rawTotalRub) * 10000) / 100; // до 2 знаков после запятой
+            discountLabel = `${flatDiscountRub}₽ (~${discountPercent}%)`;
+          }
+        }
+      }
       if (discountPercent) {
         const discounted = [];
         const excluded = [];
@@ -822,8 +1015,8 @@ async function processReport(reportTextRaw) {
             discounted.push(it._name);
           }
         }
-        if (discounted.length) log(`  [СКИДКА ${discountPercent}%] Применена к: ${discounted.join(', ')}`);
-        if (excluded.length) log(`  [СКИДКА ${discountPercent}%] НЕ применена (в списке исключений) к: ${excluded.join(', ')}`);
+        if (discounted.length) log(`  [СКИДКА ${discountLabel}] Применена к: ${discounted.join(', ')}`);
+        if (excluded.length) log(`  [СКИДКА ${discountLabel}] НЕ применена (в списке исключений) к: ${excluded.join(', ')}`);
       }
     }
 
