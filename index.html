@@ -420,6 +420,17 @@ function detectFlatDiscountRub(blockText) {
   return found ? totalRub : null;
 }
 
+// Иногда скидку пишут как фиксированную сумму С ЕДИНИЦЫ ТОВАРА, например "Скидка 100р/шт"
+// (в отличие от detectFlatDiscountRub — там сумма на весь заказ одной строкой без "/шт").
+// Считаем это отдельно, а не долей от общей суммы заказа: раз скидка "с штуки", то и
+// эквивалентный процент у каждого товара свой (зависит от его собственной цены), поэтому
+// применяется индивидуально в месте вызова, а не одним числом на все позиции разом.
+function detectFlatDiscountPerUnitRub(blockText) {
+  const m = blockText.match(/скидка\D{0,10}(\d+(?:[.,]\d+)?)\s*(?:р|руб|₽)\.?\s*\/\s*шт/i);
+  if (m) return parseFloat(m[1].replace(',', '.'));
+  return null;
+}
+
 function isDiscountExcluded(item) {
   const nameLower = (item._name || '').toLowerCase();
   if (DISCOUNT_EXCLUDE_KEYWORDS.some(kw => nameLower.includes(kw))) return true;
@@ -767,6 +778,15 @@ function unglueFusedItemMarkers(text) {
 //   Доставляется              <- не важно
 //   2 шт, Mostarda_Fichi_120g <- количество, артикул товара в МоемСкладе
 //   1 300 ₽                   <- сумма, не сверяем с каталогом — просто проводим платёж
+// Некоторые артикулы ОЗОН — это не единица товара 1:1, а карточка-НАБОР, физически состоящая
+// из нескольких штук базового товара в МоемСкладе (например, артикул "Theramed3in1" продаёт
+// сразу 3 тюбика пасты Theramed одним лотом). Для таких артикулов "1 шт" в заказе ОЗОН нужно
+// превращать в кратное количество при отгрузке фактического товара со склада — иначе спишется
+// только 1 шт вместо реальных 3. Ключи — артикул ОЗОН в нижнем регистре, значение — множитель.
+const OZON_ARTICLE_QTY_MULTIPLIER = {
+  'theramed3in1': 3,
+};
+
 async function processMarketplaceOrder(header, block, lines, reportDate) {
   const cpRaw = lines[0] || 'OZON';
 
@@ -802,9 +822,15 @@ async function processMarketplaceOrder(header, block, lines, reportDate) {
     log(`  [!!!] ВНИМАНИЕ: ОЗОН-товар с артикулом '${ozonArticle}' не найден в МоемСкладе! Заказ [${header}] — проведите вручную.`);
     return;
   }
-  log(`  [OZON] Артикул '${ozonArticle}' найден как '${productData.name}' (Кол-во: ${ozonQty})`);
 
-  const newItem = { quantity: ozonQty, assortment: { meta: productData.meta }, price: productData.price, _name: productData.name };
+  const qtyMultiplier = OZON_ARTICLE_QTY_MULTIPLIER[ozonArticle.toLowerCase()] || 1;
+  const shipQty = ozonQty * qtyMultiplier;
+  if (qtyMultiplier !== 1) {
+    log(`  [OZON] Артикул '${ozonArticle}' — это набор x${qtyMultiplier}: в отгрузку идёт ${shipQty} шт (${ozonQty} шт заказа ОЗОН × ${qtyMultiplier}).`);
+  }
+  log(`  [OZON] Артикул '${ozonArticle}' найден как '${productData.name}' (Кол-во: ${shipQty})`);
+
+  const newItem = { quantity: shipQty, assortment: { meta: productData.meta }, price: productData.price, _name: productData.name };
   const fullDesc = `${header}\n${block.trim()}`;
   const cId = await getOrCreateCounterparty(cpRaw, '');
   if (!cId) return;
@@ -908,7 +934,7 @@ async function processReport(reportTextRaw) {
       const lineLower = line.toLowerCase();
       const isItem = /^\d+[)\.]\s+/.test(line) || (
         /(\d+\s*(?:₽|руб)|\s+[-–—]\s*\d+\s*$|🎁|подарок|презент|\s+[-–—=]\s*0\s*(?:₽|руб)?\s*$)/.test(line) &&
-        !['итого', 'подытог', 'доставк', 'скидка', 'выручка', 'оплат'].some(x => lineLower.includes(x))
+        !['итого', 'подытог', 'доставк', 'скидка', 'выручка', 'оплат', 'промокод'].some(x => lineLower.includes(x))
       );
 
       if (!isItem) continue;
@@ -1007,7 +1033,7 @@ async function processReport(reportTextRaw) {
     if (!itemsSell.length && !itemsLoss.length) {
       for (const line of lines.slice(1)) {
         const lineLower = line.toLowerCase();
-        if (['итого', 'подытог', 'доставка', 'скидка', 'выручка', 'свз', 'сдэк', 'оплат'].some(x => lineLower.includes(x))) continue;
+        if (['итого', 'подытог', 'доставка', 'скидка', 'выручка', 'свз', 'сдэк', 'оплат', 'промокод'].some(x => lineLower.includes(x))) continue;
 
         const productData = findProductMeta(line, 1.0);
         if (productData) {
@@ -1027,11 +1053,37 @@ async function processReport(reportTextRaw) {
     if (itemsSell.length) {
       let discountPercent = detectDiscountPercent(block);
       let discountLabel = discountPercent ? `${discountPercent}%` : null;
+      let perUnitHandled = false;
+
       if (!discountPercent) {
-        // Нет процентной скидки — проверяем плоскую (рублями), например "-150р" отдельной
-        // строкой. Пересчитываем её в эквивалентный процент от суммы позиций ДО скидки и
-        // применяем точно так же, как обычную процентную — так реальная выручка в МоемСкладе
-        // тоже уменьшается на эту сумму, а не только сверка совпадает "на бумаге".
+        // Скидка "N₽/шт" (фиксированная сумма с единицы, а не с суммы заказа) — у каждого
+        // товара в заказе может быть своя цена, поэтому процент считаем ОТДЕЛЬНО для каждой
+        // позиции (N от цены именно этой позиции), а не усреднённо по всей сумме заказа.
+        const perUnitRub = detectFlatDiscountPerUnitRub(block);
+        if (perUnitRub) {
+          const discounted = [];
+          const excluded = [];
+          for (const it of itemsSell) {
+            if (isDiscountExcluded(it)) {
+              excluded.push(it._name);
+              continue;
+            }
+            const pct = Math.round((perUnitRub / (it.price / 100)) * 10000) / 100;
+            it.discount = pct;
+            discounted.push(it._name);
+          }
+          if (discounted.length) log(`  [СКИДКА ${perUnitRub}₽/шт] Применена к: ${discounted.join(', ')}`);
+          if (excluded.length) log(`  [СКИДКА ${perUnitRub}₽/шт] НЕ применена (в списке исключений) к: ${excluded.join(', ')}`);
+          perUnitHandled = true;
+        }
+      }
+
+      if (!discountPercent && !perUnitHandled) {
+        // Нет процентной и нет "рубли/шт" скидки — проверяем плоскую (рублями), например
+        // "-150р" отдельной строкой. Пересчитываем её в эквивалентный процент от суммы
+        // позиций ДО скидки и применяем точно так же, как обычную процентную — так реальная
+        // выручка в МоемСкладе тоже уменьшается на эту сумму, а не только сверка совпадает
+        // "на бумаге".
         const flatDiscountRub = detectFlatDiscountRub(block);
         if (flatDiscountRub) {
           const rawTotalRub = itemsSell.reduce((s, it) => s + it.quantity * it.price, 0) / 100;
