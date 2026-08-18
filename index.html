@@ -236,7 +236,14 @@ async function loadProducts() {
     PRODUCTS_CACHE[fullName] = { meta: item.meta, price: price, buy_price: buyPrice };
     const article = (item.article || '').trim();
     if (article) {
-      ARTICLE_CACHE[article.toLowerCase()] = { meta: item.meta, price: price, buy_price: buyPrice, name: fullName };
+      // Иногда в одно поле "Артикул" в МоемСкладе вписывают СРАЗУ НЕСКОЛЬКО кодов через
+      // запятую/точку с запятой/слэш — например у одного товара может быть отдельный
+      // артикул под каждую карточку на маркетплейсе ("THERAMEDNatur Weib3, Theramed3in1").
+      // Регистрируем каждый код по отдельности, чтобы заказ с ЛЮБЫМ из них находил товар.
+      const articleCodes = article.split(/[,;/]+/).map(s => s.trim()).filter(Boolean);
+      for (const code of articleCodes) {
+        ARTICLE_CACHE[code.toLowerCase()] = { meta: item.meta, price: price, buy_price: buyPrice, name: fullName };
+      }
     }
   }
   log(`Загружено ${Object.keys(PRODUCTS_CACHE).length} товаров.`);
