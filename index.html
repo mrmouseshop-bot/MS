@@ -439,6 +439,10 @@ function detectFlatDiscountPerUnitRub(blockText) {
 }
 
 function isDiscountExcluded(item) {
+  // Товар с пометкой "[SALE]" в отчёте уже отпущен по акционной цене сам по себе —
+  // не удваиваем скидку поверх неё (см. _alreadyDiscounted, выставляется при разборе строки).
+  if (item._alreadyDiscounted) return true;
+
   const nameLower = (item._name || '').toLowerCase();
   if (DISCOUNT_EXCLUDE_KEYWORDS.some(kw => nameLower.includes(kw))) return true;
 
@@ -1011,6 +1015,12 @@ async function processReport(reportTextRaw) {
 
       if (!pRaw) continue;
 
+      // Пометка "[SALE]" на позиции означает, что ЭТОТ товар уже отпущен по акционной
+      // (сниженной) цене сам по себе — обычная автоскидка на заказ (промокод/процент) не
+      // должна применяться к нему ЕЩЁ РАЗ поверх уже сниженной цены. Ловим тег ДО того, как
+      // findProductMeta нормализует название и "[SALE]" потеряется вместе с остальным текстом.
+      const alreadyDiscounted = /\[\s*sale\s*\]/i.test(pRaw);
+
       const productData = findProductMeta(pRaw, weight);
       if (!productData) {
         log(`  [!!!] ВНИМАНИЕ: Товар '${pRaw}' не найден!`);
@@ -1029,8 +1039,8 @@ async function processReport(reportTextRaw) {
           reportPriceMismatch(productData.name, textPrice, productData.price);
           sellPrice = textPrice;
         }
-        log(`  [OK] Товар '${pRaw}' найден как '${productData.name}' (Кол-во: ${weight}, Цена: ${(sellPrice / 100).toFixed(2)} ₽)`);
-        const newItem = { quantity: weight, assortment: { meta: productData.meta }, price: sellPrice, _name: productData.name, _catalog_price: productData.price };
+        log(`  [OK] Товар '${pRaw}' найден как '${productData.name}' (Кол-во: ${weight}, Цена: ${(sellPrice / 100).toFixed(2)} ₽)${alreadyDiscounted ? ' [SALE — не участвует в автоскидке]' : ''}`);
+        const newItem = { quantity: weight, assortment: { meta: productData.meta }, price: sellPrice, _name: productData.name, _catalog_price: productData.price, _alreadyDiscounted: alreadyDiscounted };
         itemsSell.push(newItem);
         lastItem = newItem;
       }
@@ -1050,8 +1060,9 @@ async function processReport(reportTextRaw) {
             reportPriceMismatch(productData.name, textPrice, productData.price);
             fallbackPrice = textPrice;
           }
-          log(`  [SMART FALLBACK] Скрытый товар спасен: '${line}' -> '${productData.name}' (Цена: ${(fallbackPrice / 100).toFixed(2)} ₽)`);
-          itemsSell.push({ quantity: 1.0, assortment: { meta: productData.meta }, price: fallbackPrice, _name: productData.name, _catalog_price: productData.price });
+          const alreadyDiscounted = /\[\s*sale\s*\]/i.test(line);
+          log(`  [SMART FALLBACK] Скрытый товар спасен: '${line}' -> '${productData.name}' (Цена: ${(fallbackPrice / 100).toFixed(2)} ₽)${alreadyDiscounted ? ' [SALE — не участвует в автоскидке]' : ''}`);
+          itemsSell.push({ quantity: 1.0, assortment: { meta: productData.meta }, price: fallbackPrice, _name: productData.name, _catalog_price: productData.price, _alreadyDiscounted: alreadyDiscounted });
         }
       }
     }
